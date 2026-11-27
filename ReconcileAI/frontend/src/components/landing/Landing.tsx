@@ -28,7 +28,9 @@ export function Landing() {
     <div>
       <header className="bg-hero">
         <div className="shell pb-16 pt-6">
-          <Logo />
+          <div className="flex items-center justify-between gap-4">
+            <Logo />
+          </div>
           <h1 className="mt-16 text-[clamp(2.4rem,6vw,3.6rem)]">Every rupee, reconciled.</h1>
           <p className="mt-3 max-w-[58ch] text-[17px] text-fg-2">
             Bank credits matched to open invoices for Indian businesses. TDS, part-payments and bulk payments are

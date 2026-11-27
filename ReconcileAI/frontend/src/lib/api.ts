@@ -77,12 +77,25 @@ let reviewerName = "";
 // HTTP headers only carry Latin-1.
 export const setApiReviewer = (name: string) => { reviewerName = name.replace(/[^\x20-\x7e\xa0-\xff]/g, "").trim(); };
 
-// Set by the Clerk gate; unused when the app runs without sign-in.
+// Set by the Clerk gate. Without Clerk, the stored session token is used.
 let tokenProvider: (() => Promise<string | null>) | null = null;
 export const setApiTokenProvider = (p: typeof tokenProvider) => { tokenProvider = p; };
 
+// Email-and-password sessions (used when Clerk is not configured).
+const SESSION_KEY = "reconcile.session";
+export const readSessionToken = () => localStorage.getItem(SESSION_KEY);
+export const saveSessionToken = (t: string | null) =>
+  t ? localStorage.setItem(SESSION_KEY, t) : localStorage.removeItem(SESSION_KEY);
+
+export type SessionUser = { username: string; role: "viewer" | "reviewer" | "admin" };
+export type SessionInfo = {
+  auth_required: boolean; signup_enabled: boolean;
+  demo: { username: string; password: string } | null; user: SessionUser | null;
+};
+type SignedIn = { token: string; user: SessionUser };
+
 async function authorise(headers: Headers) {
-  const token = await tokenProvider?.();
+  const token = tokenProvider ? await tokenProvider() : readSessionToken();
   if (token) headers.set("Authorization", `Bearer ${token}`);
 }
 
@@ -110,6 +123,11 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   } catch {
     throw new ApiError("Can't reach the ReconcileAI API. Start it with: uvicorn api.main:app --port 8000");
   }
+  // An expired or revoked session: forget it and reopen the app, which signs in with the demo account again.
+  if (res.status === 401 && !path.startsWith("/auth/") && readSessionToken()) {
+    saveSessionToken(null);
+    window.location.assign("/app");
+  }
   if (!res.ok) {
     let msg = `${res.status} ${res.statusText}`;
     try {
@@ -126,6 +144,10 @@ const post = <T,>(path: string, body?: unknown) =>
   request<T>(path, { method: "POST", body: body instanceof FormData ? body : JSON.stringify(body ?? {}) });
 
 export const api = {
+  session: () => request<SessionInfo>("/auth/session"),
+  signIn: (username: string, password: string) => post<SignedIn>("/auth/signin", { username, password }),
+  signUp: (username: string, password: string) => post<SignedIn>("/auth/signup", { username, password }),
+  signOut: () => post("/auth/signout"),
   summary: () => request<Summary>("/summary"),
   meta: () => request<{ tds_sections: Record<string, number>; audit_actions: string[] }>("/meta"),
   transactions: () => request<Txn[]>("/transactions"),

@@ -8,7 +8,7 @@ import { Command } from "cmdk";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { api, downloadReport } from "@/lib/api";
-import { AccountButton } from "@/components/app/Auth";
+import { AccountButton, useCanLoadDemo, useLocalUser } from "@/components/app/Auth";
 import { useReviewer } from "@/components/providers";
 import { HeroStats } from "@/components/app/HeroStats";
 import { Button } from "@/components/ui";
@@ -53,6 +53,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const { data: s } = useQuery({ queryKey: ["summary"], queryFn: api.summary });
   const { reviewer, setReviewer } = useReviewer();
   const { reconcile, demo } = useBatchActions();
+  const canLoadDemo = useCanLoadDemo();
+  const account = useLocalUser();
   const [cmd, setCmd] = useState(false);
 
   useEffect(() => {
@@ -77,12 +79,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <AccountButton />
           </div>
           <div className="mt-5 flex flex-wrap items-center gap-2.5">
-            <input value={reviewer} onChange={(e) => setReviewer(e.target.value)} placeholder="Your name (reviewer)"
+            {!account && <input value={reviewer} onChange={(e) => setReviewer(e.target.value)} placeholder="Your name (reviewer)"
               aria-label="Reviewer name" title="Recorded against every approval, rejection and reassignment."
               className={clsx("h-10 w-[210px] rounded-full border bg-transparent px-4 text-[14px] text-fg placeholder:text-fg-3",
-                reviewer.trim() ? "border-line-3" : "border-amber/60")} />
+                reviewer.trim() ? "border-line-3" : "border-amber/60")} />}
             <Button variant="primary" onClick={() => reconcile.mutate()} loading={reconcile.isPending}>Run reconciliation</Button>
-            <Button onClick={() => demo.mutate()} loading={demo.isPending}>Load demo data</Button>
+            {canLoadDemo && <Button onClick={() => demo.mutate()} loading={demo.isPending}>Load demo data</Button>}
           </div>
           <HeroStats />
         </div>
@@ -113,6 +115,7 @@ function CommandBar({ open, setOpen, onReconcile, onDemo }: {
   open: boolean; setOpen: (v: boolean) => void; onReconcile: () => void; onDemo: () => void;
 }) {
   const router = useRouter();
+  const canLoadDemo = useCanLoadDemo();
   const go = (fn: () => void) => () => { setOpen(false); fn(); };
   const item = "flex h-11 cursor-pointer items-center rounded-md px-3 text-[14px] text-fg-2 data-[selected=true]:bg-white/[0.07] data-[selected=true]:text-fg";
   return (
@@ -127,7 +130,7 @@ function CommandBar({ open, setOpen, onReconcile, onDemo }: {
         </Command.Group>
         <Command.Group heading="Actions" className="[&_[cmdk-group-heading]]:px-3 [&_[cmdk-group-heading]]:py-2 [&_[cmdk-group-heading]]:text-[12px] [&_[cmdk-group-heading]]:text-fg-4">
           <Command.Item className={item} onSelect={go(onReconcile)}>Run reconciliation</Command.Item>
-          <Command.Item className={item} onSelect={go(onDemo)}>Load demo dataset</Command.Item>
+          {canLoadDemo && <Command.Item className={item} onSelect={go(onDemo)}>Load demo dataset</Command.Item>}
           <Command.Item className={item} onSelect={go(() => { downloadReport().catch((e) => toast.error((e as Error).message)); })}>Download Excel report</Command.Item>
         </Command.Group>
       </Command.List>

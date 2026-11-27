@@ -35,7 +35,7 @@ services:
     #
     # and add the env var DATABASE_PATH=/var/data/reconcile.db
 
-  # API for the React website. Sign-in is verified with Clerk.
+  # API for the React website.
   - type: web
     name: reconcileai-api
     runtime: docker
@@ -54,11 +54,18 @@ services:
         sync: false
       - key: LLM_DATA_CONSENT
         value: "0"
-      - key: CLERK_PUBLISHABLE_KEY
-        sync: false
-      # Synthetic-data demo: everyone who signs in gets this role (viewer | reviewer | admin).
-      - key: CLERK_DEFAULT_ROLE
-        value: admin
+      # Email-and-password sign-in with a shared demo account (synthetic data only).
+      # The free plan has no disk, so the demo data is re-created on every restart.
+      - key: RECONCILE_AUTH
+        value: "1"
+      - key: RECONCILE_SIGNUP
+        value: "1"
+      - key: RECONCILE_SIGNUP_ROLE
+        value: reviewer
+      - key: RECONCILE_DEMO_USER
+        value: demo@reconcileai.example
+      - key: RECONCILE_DEMO_PASSWORD
+        value: "ReconcileDemo#2026"
       # The website's public URL, no trailing slash.
       - key: RECONCILE_CORS
         sync: false
@@ -74,7 +81,5 @@ services:
     envVars:
       - key: NODE_VERSION
         value: "22"
-      - key: NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
-        sync: false
       - key: RECONCILE_API_URL
         sync: false

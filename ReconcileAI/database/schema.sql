@@ -228,6 +228,13 @@ CREATE TABLE IF NOT EXISTS users (
     created_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- Website sign-in sessions. Only a hash of each token is kept.
+CREATE TABLE IF NOT EXISTS sessions (
+    token_hash TEXT PRIMARY KEY,
+    username   TEXT NOT NULL REFERENCES users(username) ON DELETE CASCADE,
+    expires_at INTEGER NOT NULL
+);
+
 CREATE TRIGGER IF NOT EXISTS audit_no_update BEFORE UPDATE ON audit_logs
 BEGIN SELECT RAISE(ABORT, 'audit log entries cannot be changed'); END;
 CREATE TRIGGER IF NOT EXISTS audit_no_delete BEFORE DELETE ON audit_logs

@@ -45,12 +45,19 @@ from security import auth, clerk  # noqa: E402
 async def _lifespan(_app):
     initialise_database()
     auth.bootstrap_admin()
+    if auth.ensure_demo_account():
+        from data.demo_seed import seed_if_empty
+        seed_if_empty()
     yield
 
 
 app = FastAPI(title="ReconcileAI API", version="1.0", lifespan=_lifespan)
 ORIGINS = [o.strip() for o in
            os.getenv("RECONCILE_CORS", "http://localhost:3000,http://127.0.0.1:3000").split(",") if o.strip()]
+
+
+# Reachable without signing in. Each handler checks what it needs itself.
+PUBLIC_PATHS = {"/api/health", "/api/auth/session", "/api/auth/signin", "/api/auth/signup", "/api/auth/signout"}
 
 
 def _required_role(method: str, path: str) -> str:
@@ -65,17 +72,21 @@ def _required_role(method: str, path: str) -> str:
 async def _guard_requests(request: Request, call_next):
     """Login (Clerk when configured, else HTTP Basic) and cross-site request protection."""
     method, path = request.method, request.url.path
-    if method == "OPTIONS" or path == "/api/health":
+    if method == "OPTIONS":
         return await call_next(request)
     origin = request.headers.get("origin")
     if method not in ("GET", "HEAD") and origin and origin not in ORIGINS:
         return JSONResponse({"detail": "Requests from this origin are not allowed."}, status_code=403)
+    if path in PUBLIC_PATHS:
+        return await call_next(request)
     if settings.AUTH_ENABLED or clerk.enabled():
         user = None
         scheme, _, token = request.headers.get("authorization", "").partition(" ")
         if clerk.enabled():
             if scheme.lower() == "bearer":
                 user = await run_in_threadpool(clerk.authenticate, token, ORIGINS)
+        elif scheme.lower() == "bearer":
+            user = await run_in_threadpool(auth.session_user, token)
         elif scheme.lower() == "basic":
             try:
                 name, _, password = base64.b64decode(token).decode("utf-8").partition(":")
@@ -83,7 +94,8 @@ async def _guard_requests(request: Request, call_next):
             except (binascii.Error, UnicodeDecodeError, ValueError):
                 user = None
         if not user:
-            challenge = "Bearer" if clerk.enabled() else 'Basic realm="ReconcileAI"'
+            # A Basic challenge would make browsers pop a dialog over the website's own sign-in.
+            challenge = "Bearer" if clerk.enabled() or scheme.lower() == "bearer" else 'Basic realm="ReconcileAI"'
             return JSONResponse({"detail": "Sign in to continue."}, status_code=401,
                                 headers={"WWW-Authenticate": challenge})
         if not auth.has_role(user, _required_role(method, path)):
@@ -183,6 +195,70 @@ def _remittance(utr: str | None) -> dict | None:
     return {**rem,
             "invoice_references": sorted(set(json.loads(rem.get("invoice_references") or "[]"))),
             "evidence_text": json.loads(rem.get("evidence_text") or "[]")}
+
+
+# ── website sign-in ─────────────────────────────────────────────────────────
+
+class CredentialsBody(BaseModel):
+    username: str
+    password: str
+
+
+def _local_auth_only() -> None:
+    if clerk.enabled():
+        raise HTTPException(404, "Sign-in is handled by Clerk.")
+
+
+def _bearer(authorization: str | None) -> str:
+    scheme, _, token = (authorization or "").partition(" ")
+    return token if scheme.lower() == "bearer" else ""
+
+
+def _signed_in(user: dict) -> dict:
+    return {"token": auth.start_session(user["username"]), "user": user}
+
+
+@app.get("/api/auth/session")
+def auth_session(authorization: str | None = Header(None)) -> dict:
+    _local_auth_only()
+    demo = bool(settings.DEMO_USER and settings.DEMO_PASSWORD)
+    return {"auth_required": settings.AUTH_ENABLED,
+            "signup_enabled": settings.SIGNUP_ENABLED,
+            "demo": {"username": settings.DEMO_USER, "password": settings.DEMO_PASSWORD} if demo else None,
+            "user": auth.session_user(_bearer(authorization))}
+
+
+@app.post("/api/auth/signup")
+def auth_signup(body: CredentialsBody) -> dict:
+    _local_auth_only()
+    if not settings.SIGNUP_ENABLED:
+        raise HTTPException(403, "Sign-up is switched off. Ask an administrator for an account.")
+    try:
+        return _signed_in(auth.register(body.username, body.password))
+    except auth.UsernameTaken as e:
+        raise HTTPException(409, str(e))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/auth/signin")
+def auth_signin(body: CredentialsBody) -> dict:
+    _local_auth_only()
+    user = None
+    if len(body.password) <= auth.MAX_PASSWORD:
+        user = auth.authenticate(auth.normalise_username(body.username), body.password)
+    if not user:
+        raise HTTPException(401, "Wrong email or password, or too many attempts. Try again in a few minutes.")
+    return _signed_in(user)
+
+
+@app.post("/api/auth/signout")
+def auth_signout(authorization: str | None = Header(None)) -> dict:
+    _local_auth_only()
+    token = _bearer(authorization)
+    if token:
+        auth.end_session(token)
+    return {"signed_out": True}
 
 
 # ── overview ────────────────────────────────────────────────────────────────

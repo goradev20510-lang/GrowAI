@@ -6,16 +6,21 @@ from __future__ import annotations
 import hashlib
 import hmac
 import os
+import re
 import secrets
+import sqlite3
 import threading
 import time
 
+from config import settings
 from database.db import get_connection, commit
 from database.repositories import create_audit_log
 
 ROLES = ("viewer", "reviewer", "admin")
 _ITERATIONS = 600_000
 MIN_PASSWORD = 10
+MAX_PASSWORD = 128
+_EMAIL = re.compile(r"^[^@\s:]+@[^@\s:]+\.[^@\s:]+$")
 MAX_FAILURES, LOCK_SECONDS = 5, 300
 
 _failures: dict[str, list[float]] = {}
@@ -42,6 +47,8 @@ def create_user(username: str, password: str, role: str = "viewer", actor: str =
         """INSERT INTO users(username,password_hash,role) VALUES(?,?,?)
            ON CONFLICT(username) DO UPDATE SET password_hash=excluded.password_hash, role=excluded.role""",
         (username, _hash(password), role))
+    commit()
+    get_connection().execute("DELETE FROM sessions WHERE username=?", (username,))
     commit()
     _verified.pop(username, None)
     create_audit_log("user", username, "user_saved", actor=actor, details={"role": role})
@@ -84,3 +91,75 @@ def authenticate(username: str, password: str) -> dict | None:
 
 def has_role(user: dict, needed: str) -> bool:
     return ROLES.index(user["role"]) >= ROLES.index(needed)
+
+
+# ── website sign-up and sessions ─────────────────────────────────────────────
+
+class UsernameTaken(ValueError):
+    pass
+
+
+def normalise_username(username: str) -> str:
+    """Email addresses are case-insensitive; other usernames are kept as typed."""
+    name = (username or "").strip()
+    return name.lower() if "@" in name else name
+
+
+def register(email: str, password: str) -> dict:
+    """Self-service sign-up. Unlike create_user, never overwrites an existing account."""
+    name = normalise_username(email)
+    if len(name) > 254 or not _EMAIL.match(name):
+        raise ValueError("Enter a valid email address")
+    if not MIN_PASSWORD <= len(password or "") <= MAX_PASSWORD:
+        raise ValueError(f"Password must be {MIN_PASSWORD} to {MAX_PASSWORD} characters")
+    role = settings.SIGNUP_ROLE if settings.SIGNUP_ROLE in ("viewer", "reviewer") else "viewer"
+    try:
+        get_connection().execute("INSERT INTO users(username,password_hash,role) VALUES(?,?,?)",
+                                 (name, _hash(password), role))
+    except sqlite3.IntegrityError:
+        get_connection().rollback()
+        raise UsernameTaken("An account with this email already exists. Sign in instead.")
+    commit()
+    create_audit_log("user", name, "user_registered", actor=name, details={"role": role})
+    return {"username": name, "role": role}
+
+
+def _token_hash(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def start_session(username: str) -> str:
+    token, now = secrets.token_urlsafe(32), int(time.time())
+    conn = get_connection()
+    conn.execute("DELETE FROM sessions WHERE expires_at <= ?", (now,))
+    conn.execute("INSERT INTO sessions(token_hash,username,expires_at) VALUES(?,?,?)",
+                 (_token_hash(token), username, now + settings.SESSION_DAYS * 86_400))
+    commit()
+    return token
+
+
+def session_user(token: str) -> dict | None:
+    if not token:
+        return None
+    row = get_connection().execute(
+        """SELECT u.username, u.role FROM sessions s JOIN users u ON u.username = s.username
+           WHERE s.token_hash=? AND s.expires_at > ?""", (_token_hash(token), int(time.time()))).fetchone()
+    return {"username": row["username"], "role": row["role"]} if row else None
+
+
+def end_session(token: str) -> None:
+    get_connection().execute("DELETE FROM sessions WHERE token_hash=?", (_token_hash(token),))
+    commit()
+
+
+def ensure_demo_account() -> bool:
+    """Create the shared demo login if configured. Reviewer role: it cannot manage users."""
+    name, password = settings.DEMO_USER, settings.DEMO_PASSWORD
+    if not (name and password):
+        return False
+    row = get_connection().execute("SELECT * FROM users WHERE username=?", (name,)).fetchone()
+    current = row and row["role"] == "reviewer" and hmac.compare_digest(
+        _hash(password, bytes.fromhex(row["password_hash"].split("$")[0])), row["password_hash"])
+    if not current:
+        create_user(name, password, "reviewer")
+    return True

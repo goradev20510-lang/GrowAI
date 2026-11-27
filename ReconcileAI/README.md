@@ -218,6 +218,16 @@ ReconcileAI/
 └── tests/                         # pytest suite (offline, throw-away databases)
 ```
 
+## Sign-in and the demo account
+
+`sh scripts/run_demo.sh` starts the API and website with sign-in on, then open http://localhost:3002/signin. Set `PYTHON=/path/to/python` if the project has no `.venv`.
+
+| Email | Password |
+|---|---|
+| `demo@reconcileai.example` | `ReconcileDemo#2026` |
+
+The demo account has the reviewer role and sees synthetic data only. Anyone can also sign up at `/signup`; all accounts share one ledger. Sign-up is off when `APP_ENV=production` unless `RECONCILE_SIGNUP=1`. If `CLERK_PUBLISHABLE_KEY` is set, Clerk handles sign-in instead.
+
 ## Tests
 
 ```bash

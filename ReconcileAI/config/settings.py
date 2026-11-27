@@ -68,6 +68,14 @@ DEFAULT_REVIEWER: str = os.getenv("DEFAULT_REVIEWER", "Finance Team")
 # On by default in production. Users come from scripts/create_user.py or the
 # RECONCILE_ADMIN_USER / RECONCILE_ADMIN_PASSWORD bootstrap variables.
 AUTH_ENABLED: bool = _flag("RECONCILE_AUTH", APP_ENV == "production")
+# Self-service sign-up on the website. Off in production unless switched on.
+SIGNUP_ENABLED: bool = _flag("RECONCILE_SIGNUP", APP_ENV != "production")
+SIGNUP_ROLE: str = os.getenv("RECONCILE_SIGNUP_ROLE", "reviewer").strip().lower()
+SESSION_DAYS: int = int(os.getenv("RECONCILE_SESSION_DAYS", 7))
+# Shared demo login for product walk-throughs. Setting both shows the credentials on the
+# sign-in page and fills an empty database with synthetic data. Never use with real data.
+DEMO_USER: str = os.getenv("RECONCILE_DEMO_USER", "").strip().lower()
+DEMO_PASSWORD: str = os.getenv("RECONCILE_DEMO_PASSWORD", "")
 
 # ── Directories ───────────────────────────────────────────────────────────────
 DATA_RAW_DIR: Path = ROOT_DIR / "data" / "raw"
