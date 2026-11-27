@@ -8,7 +8,7 @@ API_PORT="${API_PORT:-8002}"
 WEB_PORT="${WEB_PORT:-3002}"
 PYTHON="${PYTHON:-$([ -x .venv/bin/python ] && echo .venv/bin/python || echo python3)}"
 
-export RECONCILE_AUTH=1
+export RECONCILE_LOGIN=1
 export RECONCILE_DEMO_USER="${RECONCILE_DEMO_USER:-demo@reconcileai.example}"
 export RECONCILE_DEMO_PASSWORD="${RECONCILE_DEMO_PASSWORD:-ReconcileDemo#2026}"
 export DATABASE_PATH="${DATABASE_PATH:-data/processed/demo.db}"

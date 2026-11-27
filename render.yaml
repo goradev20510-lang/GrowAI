@@ -18,7 +18,7 @@ services:
       - key: LLM_MATCH_EXPLANATIONS
         value: "0"
       # Public demo: no login, synthetic data loaded on every start.
-      - key: RECONCILE_AUTH
+      - key: RECONCILE_LOGIN
         value: "0"
       - key: RECONCILE_DEMO_DATA
         value: "1"
@@ -56,7 +56,7 @@ services:
         value: "0"
       # Public demo: no login, synthetic data only. The free plan has no disk, so the
       # demo data is re-created on every (cold) restart.
-      - key: RECONCILE_AUTH
+      - key: RECONCILE_LOGIN
         value: "0"
       - key: RECONCILE_DEMO_DATA
         value: "1"

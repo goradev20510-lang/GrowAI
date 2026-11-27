@@ -109,7 +109,7 @@ These are API/CLI features; the two web UIs do not have screens for them yet.
 
 ## Login, audit and backups
 
-- Login is **on when `APP_ENV=production`** (or `RECONCILE_AUTH=1`). Create the first admin with `RECONCILE_ADMIN_USER` / `RECONCILE_ADMIN_PASSWORD` (10+ characters) or `python -m scripts.create_user NAME --role admin`. Roles: viewer, reviewer, admin. The API uses HTTP Basic, so **serve it over HTTPS only**.
+- Login is **off unless `RECONCILE_LOGIN=1`** (the old `RECONCILE_AUTH` is ignored). Create the first admin with `RECONCILE_ADMIN_USER` / `RECONCILE_ADMIN_PASSWORD` (10+ characters) or `python -m scripts.create_user NAME --role admin`. Roles: viewer, reviewer, admin. The API uses HTTP Basic, so **serve it over HTTPS only**.
 - Audit entries are hash-chained and database triggers block edits. `GET /api/audit-chain` verifies the chain. Someone with direct file access could rebuild it, so record the returned `head` elsewhere.
 - `python -m scripts.backup_db` makes a consistent copy and checks the chain. Schedule it yourself.
 - Before text goes to a model provider, account numbers, PAN, phone numbers and e-mail addresses are masked. Names, amounts and GSTINs are still sent. In production nothing is sent unless `LLM_DATA_CONSENT=1`.
@@ -175,7 +175,7 @@ See [`.env.example`](.env.example). The key settings:
 | `LLM_DATA_CONSENT` | `1`, `0` in production | Required before document text is sent to a model |
 | `LLM_MASK_SENSITIVE` | `1` | Mask account numbers, PAN, phone and e-mail |
 | `RECONCILE_MAX_ROUNDING` | `100` | Largest rounding difference in rupees |
-| `RECONCILE_AUTH` | on in production | Require login |
+| `RECONCILE_LOGIN` | off | Require login |
 | `RECONCILE_CORS` | localhost:3000 | Origins allowed to change data |
 | `APP_MODE` | – | Docker: `api` serves FastAPI instead of Streamlit |
 | `DATABASE_PATH` | `database/reconcile.db` | SQLite file. Older databases are migrated in place on start-up (back up first). |
@@ -218,7 +218,7 @@ ReconcileAI/
 
 ## Sign-in and the demo account
 
-The public Render demo has login off (`RECONCILE_AUTH=0`) and `RECONCILE_DEMO_DATA=1`, so the website and the Streamlit app open straight into the synthetic dataset, which is re-created after every cold restart. With login on, the website has no sign-in page: it signs in with the demo account below automatically. `sh scripts/run_demo.sh` starts the API and website that way. Set `PYTHON=/path/to/python` if the project has no `.venv`.
+The public Render demo has login off (the default) and `RECONCILE_DEMO_DATA=1`, so the website and the Streamlit app open straight into the synthetic dataset, which is re-created after every cold restart. With login on, the website has no sign-in page: it signs in with the demo account below automatically. `sh scripts/run_demo.sh` starts the API and website that way. Set `PYTHON=/path/to/python` if the project has no `.venv`.
 
 | Email | Password |
 |---|---|

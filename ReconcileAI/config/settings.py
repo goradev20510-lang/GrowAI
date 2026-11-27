@@ -65,9 +65,10 @@ LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
 DEFAULT_REVIEWER: str = os.getenv("DEFAULT_REVIEWER", "Finance Team")
 
 # ── Login ─────────────────────────────────────────────────────────────────────
-# On by default in production. Users come from scripts/create_user.py or the
-# RECONCILE_ADMIN_USER / RECONCILE_ADMIN_PASSWORD bootstrap variables.
-AUTH_ENABLED: bool = _flag("RECONCILE_AUTH", APP_ENV == "production")
+# Off unless RECONCILE_LOGIN=1 (the public demo has no sign-in). The old RECONCILE_AUTH
+# variable is ignored on purpose, so a stale value in a hosting dashboard cannot turn it on.
+# Users come from scripts/create_user.py or RECONCILE_ADMIN_USER / RECONCILE_ADMIN_PASSWORD.
+AUTH_ENABLED: bool = _flag("RECONCILE_LOGIN", False)
 # Self-service sign-up on the website. Off in production unless switched on.
 SIGNUP_ENABLED: bool = _flag("RECONCILE_SIGNUP", APP_ENV != "production")
 SIGNUP_ROLE: str = os.getenv("RECONCILE_SIGNUP_ROLE", "reviewer").strip().lower()
@@ -78,7 +79,8 @@ DEMO_USER: str = os.getenv("RECONCILE_DEMO_USER", "").strip().lower()
 DEMO_PASSWORD: str = os.getenv("RECONCILE_DEMO_PASSWORD", "")
 # Fill an empty database with the synthetic dataset on start-up (for a public demo with
 # login off, where the database is wiped on every cold restart). Never use with real data.
-DEMO_DATA: bool = _flag("RECONCILE_DEMO_DATA", False)
+# On by default for a production deploy with login off, i.e. the public demo.
+DEMO_DATA: bool = _flag("RECONCILE_DEMO_DATA", APP_ENV == "production" and not AUTH_ENABLED)
 
 # ── Directories ───────────────────────────────────────────────────────────────
 DATA_RAW_DIR: Path = ROOT_DIR / "data" / "raw"
