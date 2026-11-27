@@ -103,7 +103,7 @@ def reset_database() -> None:
     conn.execute("PRAGMA foreign_keys = OFF")
     conn.execute("DROP TRIGGER IF EXISTS audit_no_update")
     conn.execute("DROP TRIGGER IF EXISTS audit_no_delete")
-    for table in ("settlement_components", "payment_allocations", "customer_credits", "invoice_adjustments",
+    for table in ("vendor_payments", "vendor_bills", "settlement_components", "payment_allocations", "customer_credits", "invoice_adjustments",
                   "review_cases", "remittance_records", "extractions", "audit_logs", "reconciliation_batches",
                   "bank_transactions", "invoices", "customers", "documents"):
         conn.execute(f"DELETE FROM {table}")

@@ -8,7 +8,7 @@ import { api, type AuditRow } from "@/lib/api";
 import { fmtTs } from "@/lib/format";
 import { ErrorNote, Field, Mono, PageHead, Skeleton, inputCls } from "@/components/ui";
 
-const ENTITIES = ["transaction", "allocation", "invoice", "review_case", "remittance", "batch", "system"];
+const ENTITIES = ["transaction", "allocation", "invoice", "review_case", "vendor_bill", "remittance", "batch", "system"];
 
 export default function AuditPage() {
   const [q, setQ] = useState("");

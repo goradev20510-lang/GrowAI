@@ -16,7 +16,8 @@ import { Button } from "@/components/ui";
 const NAV = [
   { href: "/app/review", label: "Needs review" },
   { href: "/app/overview", label: "Overview" },
-  { href: "/app/credits", label: "Bank credits" },
+  { href: "/app/statement", label: "Statement" },
+  { href: "/app/vendors", label: "Vendors" },
   { href: "/app/import", label: "Import" },
   { href: "/app/reports", label: "Reports" },
   { href: "/app/audit", label: "Activity" },
@@ -70,7 +71,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <div>
               <h1 className="text-[2.4rem]"><Link href="/">ReconcileAI</Link></h1>
               <p className="mt-1 max-w-[60ch] text-[16px] text-fg-2">
-                Bank money in, matched to open invoices and checked line by line against the bank statement.
+                Customer money in, vendor money out, checked line by line against the bank statement.
               </p>
             </div>
             <AccountButton />

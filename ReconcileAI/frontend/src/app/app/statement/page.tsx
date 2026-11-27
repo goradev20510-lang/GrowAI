@@ -2,72 +2,76 @@
 
 import clsx from "clsx";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AnimatePresence, motion } from "motion/react";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
 import { MagnifyingGlass } from "@phosphor-icons/react";
-import { api, type Txn } from "@/lib/api";
+import { api, type StatementLine } from "@/lib/api";
 import { fmtDate, inr, pct } from "@/lib/format";
-import { txnStatus } from "@/lib/vocab";
+import { DEBIT_STATUS, txnStatus } from "@/lib/vocab";
 import { useReviewer } from "@/components/providers";
 import { Button, ErrorNote, KV, Mono, PageHead, Pills, Skeleton, Status, Table, inputCls } from "@/components/ui";
+import { DebitPanel } from "@/components/app/DebitPanel";
 import { EmptyLedger } from "@/components/app/EmptyLedger";
 
-const ORDER = ["unmatched", "review", "matched", "duplicate", "excluded"];
+type Filter = "all" | "in" | "out" | "to_link" | "review" | "unmatched";
 
-export default function CreditsPage() {
-  const q = useQuery({ queryKey: ["transactions"], queryFn: api.transactions });
-  const [filter, setFilter] = useState("all");
+const FILTERS: { value: Filter; label: string; test: (t: StatementLine) => boolean }[] = [
+  { value: "all", label: "All", test: () => true },
+  { value: "in", label: "Money in", test: (t) => t.direction === "in" },
+  { value: "out", label: "Money out", test: (t) => t.direction === "out" },
+  { value: "to_link", label: "Payments to link", test: (t) => t.unlinked > 0 },
+  { value: "review", label: "In review", test: (t) => t.status === "review" },
+  { value: "unmatched", label: "Unmatched", test: (t) => t.status === "unmatched" },
+];
+
+const lineStatus = (t: StatementLine) => (t.direction === "out" ? DEBIT_STATUS[t.status] : txnStatus(t.status));
+
+export default function StatementPage() {
+  const q = useQuery({ queryKey: ["statement"], queryFn: api.statement });
+  const [filter, setFilter] = useState<Filter>("all");
   const [search, setSearch] = useState("");
   const [picked, setPicked] = useState<string | null>(null);
 
-  const txns = useMemo(() => q.data ?? [], [q.data]);
-  const counts = useMemo(() => {
-    const m: Record<string, number> = {};
-    txns.forEach((t) => (m[t.status] = (m[t.status] ?? 0) + 1));
-    return m;
-  }, [txns]);
-  const rows = txns.filter((t) => (filter === "all" || t.status === filter) &&
-    (!search || `${t.transaction_id} ${t.utr ?? ""} ${t.narration ?? ""}`.toLowerCase().includes(search.toLowerCase())));
+  const lines = useMemo(() => q.data ?? [], [q.data]);
+  const active = FILTERS.find((f) => f.value === filter)!;
+  const rows = lines.filter((t) => active.test(t) &&
+    (!search || `${t.transaction_id} ${t.utr ?? ""} ${t.narration ?? ""} ${t.linked_to.join(" ")}`.toLowerCase().includes(search.toLowerCase())));
+  const current = lines.find((t) => t.transaction_id === picked);
 
-  const head = <PageHead title="Bank credits" lede="Every credit line from imported statements, and the invoices each one was applied to." />;
+  const head = <PageHead title="Statement" lede="Every bank line, money in and money out, with the invoice or vendor bill it is linked to. Select a line to open it." />;
   if (q.error) return <>{head}<ErrorNote error={q.error} /></>;
   if (!q.data) return <>{head}<Skeleton className="h-[520px]" /></>;
-  if (!txns.length) return <>{head}<EmptyLedger title="No bank credits yet." body="Import a bank statement to see its credit lines here, or load the synthetic demo dataset." /></>;
+  if (!lines.length) return <>{head}<EmptyLedger title="No bank lines yet" body="Import a bank statement to see it here, or load the synthetic demo dataset." /></>;
 
   return (
     <>
       {head}
-      <div className="mb-5 flex flex-wrap items-center justify-between gap-4">
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <Pills value={filter} onChange={(v) => { setFilter(v); setPicked(null); }}
-          options={[{ value: "all", label: "All", count: txns.length },
-            ...ORDER.filter((s) => counts[s]).map((s) => ({ value: s, label: txnStatus(s).label, count: counts[s] }))]} />
-        <label className="relative w-full sm:w-[300px]">
+          options={FILTERS.map((f) => ({ value: f.value, label: f.label, count: lines.filter(f.test).length }))} />
+        <label className="relative w-full sm:w-[280px]">
           <MagnifyingGlass className="pointer-events-none absolute left-3.5 top-1/2 size-4 -translate-y-1/2 text-fg-4" />
-          <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Transaction, UTR or narration"
-            aria-label="Search credits" className={clsx(inputCls, "pl-10")} />
+          <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Narration, UTR, invoice or vendor"
+            aria-label="Search statement" className={clsx(inputCls, "pl-10")} />
         </label>
       </div>
-      <Table<Txn> rows={rows} rowKey={(t) => t.transaction_id} selected={picked} max={560}
-        onRow={(t) => setPicked(picked === t.transaction_id ? null : t.transaction_id)} empty="No credits match this filter."
+      {current && (
+        <div key={current.transaction_id} ref={(el) => el?.scrollIntoView({ block: "nearest" })} className="mb-5 scroll-mt-20">
+          {current.direction === "out" ? <DebitPanel key={current.transaction_id} id={current.transaction_id} />
+            : <Detail key={current.transaction_id} id={current.transaction_id} />}
+        </div>
+      )}
+      <Table<StatementLine> rows={rows} rowKey={(t) => t.transaction_id} selected={picked} max={620}
+        onRow={(t) => setPicked(picked === t.transaction_id ? null : t.transaction_id)} empty="No lines match this filter."
         cols={[
-          { key: "d", head: "Value date", cell: (t) => <span className="text-fg-2">{fmtDate(t.transaction_date)}</span> },
-          { key: "t", head: "Transaction", cell: (t) => <Mono>{t.transaction_id}</Mono> },
-          { key: "n", head: "Narration", cell: (t) => <span className="line-clamp-1 max-w-[40ch] text-fg-2">{t.narration}</span>, className: "max-lg:hidden" },
-          { key: "u", head: "UTR", cell: (t) => <Mono>{t.utr}</Mono>, className: "max-xl:hidden" },
-          { key: "a", head: "Amount", num: true, cell: (t) => inr(t.credit_amount) },
-          { key: "s", head: "Status", cell: (t) => <Status {...txnStatus(t.status)} /> },
+          { key: "d", head: "Date", cell: (t) => <span className="whitespace-nowrap text-fg-2">{fmtDate(t.transaction_date)}</span> },
+          { key: "n", head: "Narration", cell: (t) => (
+            <><span className="line-clamp-1 max-w-[34ch]">{t.narration}</span><Mono>{t.transaction_id}</Mono></>) },
+          { key: "in", head: "Money in", num: true, cell: (t) => (t.direction === "in" ? inr(t.credit_amount) : "") },
+          { key: "out", head: "Money out", num: true, cell: (t) => (t.direction === "out" ? inr(t.debit_amount) : "") },
+          { key: "l", head: "Linked to", cell: (t) => <span className="text-fg-2">{t.linked_to.join(", ") || "—"}</span>, className: "max-lg:hidden" },
+          { key: "s", head: "Status", cell: (t) => <Status {...lineStatus(t)} /> },
         ]} />
-      <AnimatePresence mode="wait">
-        {picked ? (
-          <motion.div key={picked} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
-            transition={{ duration: 0.25, ease: [0.25, 1, 0.5, 1] }} className="mt-5">
-            <Detail id={picked} />
-          </motion.div>
-        ) : (
-          <p className="mt-4 text-[13px] text-fg-4">Select a row to see which invoices it was applied to and why.</p>
-        )}
-      </AnimatePresence>
     </>
   );
 }

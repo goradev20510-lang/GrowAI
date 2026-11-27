@@ -6,7 +6,7 @@ import { inr } from "@/lib/format";
 
 const money = (n: number) => inr(n, 0);
 
-/** The three headline figures: bank money, invoices, and what still needs a person. */
+/** Headline figures: money in, invoices, vendors, and what still needs a person. */
 export function HeroStats() {
   const { data: s } = useQuery({ queryKey: ["summary"], queryFn: api.summary });
   if (!s) return <p className="mt-8 text-[14px] text-fg-3">Figures appear once the API responds.</p>;
@@ -14,7 +14,7 @@ export function HeroStats() {
 
   return (
     <div className="mt-8 grid gap-x-8 gap-y-7 md:grid-cols-2">
-      <Block title="Bank credits" figure={money(s.amount_matched)} of={`matched of ${money(s.amount_received)}`}>
+      <Block title="Money in" figure={money(s.amount_matched)} of={`matched of ${money(s.amount_received)}`}>
         <Bar total={s.amount_received} solid={s.amount_matched} striped={s.amount_in_review} />
         <Legend items={[["bg-white", "Matched", money(s.amount_matched)], ["stripes", "In review", money(s.amount_in_review)]]} />
         <Legend items={[["", "Unmatched", money(s.amount_unmatched)], ["", "Duplicate", money(s.amount_duplicate)]]} />
@@ -26,6 +26,12 @@ export function HeroStats() {
         <Legend items={[["", "TDS awaiting certificate", money(s.tds_pending)]]} />
       </Block>
 
+      <Block title="Vendors" figure={money(s.vendor_paid)} of={`paid of ${money(s.vendor_billed)}`}>
+        <Bar total={s.vendor_billed} solid={s.vendor_paid} />
+        <Legend items={[["bg-white", "Paid", money(s.vendor_paid)], ["", "Unpaid", money(s.vendor_unpaid)]]} />
+        <Legend items={[["", "Bills missing", String(s.vendor_bills_missing)], ["", "Total money out", money(s.debit_total)]]} />
+      </Block>
+
       <div>
         <p className="text-[15px] font-bold text-fg-2">Needs a person</p>
         <p className="mt-1 text-[16px] font-semibold text-fg-2">
@@ -35,6 +41,12 @@ export function HeroStats() {
         <p className="mt-3 text-[14px] text-fg-2">
           <b className="num text-fg">{money(s.amount_in_review + s.amount_unmatched)}</b> in review or unmatched
         </p>
+        {s.debit_unlinked_count > 0 && (
+          <p className="mt-1 text-[14px] text-fg-2">
+            <b className="num text-fg">{money(s.debit_unlinked)}</b> paid out and not linked
+            ({s.debit_unlinked_count} {s.debit_unlinked_count === 1 ? "payment" : "payments"})
+          </p>
+        )}
       </div>
     </div>
   );

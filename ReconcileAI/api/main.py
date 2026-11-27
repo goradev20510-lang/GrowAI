@@ -37,6 +37,7 @@ from database.repositories import (  # noqa: E402
 )
 from decision import adjustments as adj  # noqa: E402
 from decision import review_manager as rm  # noqa: E402
+from decision import vendor_payments as vp  # noqa: E402
 from database import repositories as repo  # noqa: E402
 from security import auth, clerk  # noqa: E402
 
@@ -192,6 +193,7 @@ def summary() -> dict:
     txns = get_all_transactions()
     s["amount_duplicate"] = round(sum(float(t["credit_amount"] or 0) for t in txns if t["status"] == "duplicate"), 2)
     s["review_queue"] = len(review_queue(get_open_review_cases()))
+    s.update(vp.payables_summary())
     return s
 
 
@@ -233,6 +235,54 @@ def transaction_reverse(tid: str, body: NoteBody, request: Request,
                         x_reviewer: str | None = Header(None)) -> dict:
     return _guard(rm.reverse_transaction, tid, reviewer=_reviewer(request, x_reviewer),
                   notes=_need_note(body.notes))
+
+
+# ── statement and outgoing payments ─────────────────────────────────────────
+
+@app.get("/api/statement")
+def statement() -> list[dict]:
+    return vp.statement()
+
+
+@app.get("/api/vendor-bills")
+def vendor_bills() -> list[dict]:
+    return vp.list_bills()
+
+
+@app.get("/api/debits/{tid}")
+def debit_detail(tid: str) -> dict:
+    return _guard(vp.debit_detail, tid)
+
+
+class LinkBody(BaseModel):
+    bill_id: str
+    notes: str = ""
+
+
+class OnFileBody(BaseModel):
+    on_file: bool
+
+
+@app.post("/api/debits/{tid}/link")
+def debit_link(tid: str, body: LinkBody, request: Request, x_reviewer: str | None = Header(None)) -> dict:
+    return _guard(vp.link_payment, tid, body.bill_id, reviewer=_reviewer(request, x_reviewer), notes=body.notes)
+
+
+@app.post("/api/debits/{tid}/not-vendor")
+def debit_not_vendor(tid: str, body: NoteBody, request: Request, x_reviewer: str | None = Header(None)) -> dict:
+    return _guard(vp.mark_not_vendor, tid, reviewer=_reviewer(request, x_reviewer), notes=_need_note(body.notes))
+
+
+@app.post("/api/payments/{payment_id}/unlink")
+def payment_unlink(payment_id: str, body: NoteBody, request: Request,
+                   x_reviewer: str | None = Header(None)) -> dict:
+    return _guard(vp.unlink_payment, payment_id, reviewer=_reviewer(request, x_reviewer),
+                  notes=_need_note(body.notes))
+
+
+@app.post("/api/vendor-bills/{bill_id}/on-file")
+def bill_on_file(bill_id: str, body: OnFileBody, request: Request, x_reviewer: str | None = Header(None)) -> dict:
+    return _guard(vp.set_bill_on_file, bill_id, body.on_file, reviewer=_reviewer(request, x_reviewer))
 
 
 # ── invoices ────────────────────────────────────────────────────────────────
@@ -327,7 +377,8 @@ def review_decide(case_id: str, body: DecisionBody, request: Request,
 @app.post("/api/demo/load")
 def demo_load() -> dict:
     from extraction.ingestion import load_synthetic_dataset
-    return load_synthetic_dataset()
+    from extraction.vendor_bills import load_sample
+    return {**load_synthetic_dataset(), "vendor": load_sample()}
 
 
 _batch_lock = threading.Lock()
@@ -388,6 +439,9 @@ async def import_file(kind: str, file: UploadFile | None = File(None), bank_name
         name, content = "pasted_email.txt", text.encode("utf-8")
     else:
         raise HTTPException(400, "Choose a file to import.")
+    if kind == "vendor_bill":
+        from extraction.vendor_bills import ingest_vendor_bills
+        return ingest_vendor_bills(name, content)
     if kind == "bank":
         return ingest_bank_statement(name, content, bank_name=bank_name)
     if kind == "invoice":

@@ -195,6 +195,31 @@ CREATE TABLE IF NOT EXISTS invoice_adjustments (
     created_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- ── Vendor bills (money to be paid out) ───────────────────────────────────────
+CREATE TABLE IF NOT EXISTS vendor_bills (
+    bill_id            TEXT PRIMARY KEY,
+    vendor_name        TEXT NOT NULL,
+    bill_number        TEXT NOT NULL,
+    bill_date          TEXT,
+    due_date           TEXT,
+    amount             REAL NOT NULL,
+    bill_on_file       INTEGER NOT NULL DEFAULT 0,   -- the paper needed for audit has been checked
+    source_document_id TEXT,
+    created_at         TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- ── Vendor payments: which bank debit paid which bill ─────────────────────────
+CREATE TABLE IF NOT EXISTS vendor_payments (
+    payment_id     TEXT PRIMARY KEY,
+    transaction_id TEXT NOT NULL REFERENCES bank_transactions(transaction_id),
+    bill_id        TEXT REFERENCES vendor_bills(bill_id),   -- NULL = not a vendor payment
+    amount         REAL NOT NULL,
+    status         TEXT NOT NULL DEFAULT 'active',          -- active | reversed
+    linked_by      TEXT NOT NULL,
+    notes          TEXT,
+    created_at     TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 -- ── Users (login) ─────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS users (
     username      TEXT PRIMARY KEY,
@@ -222,4 +247,6 @@ CREATE INDEX IF NOT EXISTS idx_remit_utr            ON remittance_records(utr);
 CREATE INDEX IF NOT EXISTS idx_credit_txn           ON customer_credits(transaction_id);
 CREATE INDEX IF NOT EXISTS idx_adj_invoice          ON invoice_adjustments(invoice_id);
 CREATE INDEX IF NOT EXISTS idx_txn_amount           ON bank_transactions(credit_amount);
+CREATE INDEX IF NOT EXISTS idx_vpay_txn             ON vendor_payments(transaction_id);
+CREATE INDEX IF NOT EXISTS idx_vpay_bill            ON vendor_payments(bill_id);
 CREATE INDEX IF NOT EXISTS idx_setl_alloc           ON settlement_components(allocation_id);

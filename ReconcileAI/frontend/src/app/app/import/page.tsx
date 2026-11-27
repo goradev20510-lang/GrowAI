@@ -11,18 +11,19 @@ import { api } from "@/lib/api";
 import { fmtTs } from "@/lib/format";
 import { Button, Field, Mono, PageHead, SectionHead, Table, inputCls } from "@/components/ui";
 
-type Kind = "bank" | "invoice" | "remittance";
+type Kind = "bank" | "invoice" | "remittance" | "vendor_bill";
 
 const KINDS: { value: Kind; label: string; accept: string[]; note: string }[] = [
   { value: "bank", label: "Bank statement", accept: [".csv", ".xlsx", ".xls"], note: "CSV or Excel. Columns are parsed directly, with no model involved." },
   { value: "invoice", label: "Invoices", accept: [".pdf", ".csv", ".xlsx", ".xls"], note: "PDF, CSV or Excel register. Spreadsheets are parsed directly; PDF text is structured (by the model when one is configured) and validated before it is saved." },
   { value: "remittance", label: "Remittance advice", accept: [".eml", ".txt", ".pdf"], note: "A payment email or pasted text. Invoice references, amounts, TDS and UTR are extracted, and the sentence each value came from is kept as evidence." },
+  { value: "vendor_bill", label: "Vendor bills", accept: [".csv", ".xlsx", ".xls"], note: "A CSV or Excel register with Vendor, Bill number and Amount columns. Bill date, Due date and Bill on file are optional. Parsed directly, with no model." },
 ];
 
 export default function ImportPage() {
   return (
     <>
-      <PageHead title="Import" lede="Bring in the three sources reconciliation needs. Re-uploading the same file is detected and skipped." />
+      <PageHead title="Import" lede="Bank statements carry money in and out; invoices, payment emails and vendor bills explain it. Re-uploading the same file is detected and skipped." />
       <Tabs.Root defaultValue="bank">
         <Tabs.List className="flex gap-1 border-b border-line" aria-label="Document type">
           {KINDS.map((k) => (
@@ -68,7 +69,7 @@ function Uploader({ kind, accept, note }: { kind: Kind; accept: string[]; note: 
     },
     onSuccess: (r) => {
       if (r.success) {
-        const n = kind === "bank" ? `${r.transactions_imported ?? 0} credit lines` : kind === "invoice" ? `${r.invoices_imported ?? 0} invoice(s)` : "Remittance";
+        const n = kind === "bank" ? `${r.transactions_imported ?? 0} credit lines` : kind === "invoice" ? `${r.invoices_imported ?? 0} invoice(s)` : kind === "vendor_bill" ? `${r.bills_imported ?? 0} vendor bill(s)` : "Remittance";
         toast.success(kind === "remittance" ? "Remittance extracted." : `Imported ${n}.`);
         setExtracted(r.extracted ?? null);
         setFile(null);
@@ -105,7 +106,7 @@ function Uploader({ kind, accept, note }: { kind: Kind; accept: string[]; note: 
         <p className="text-[14.5px] leading-relaxed text-fg-2">{note}</p>
         {kind === "bank" && <Field label="Bank"><input value={bank} onChange={(e) => setBank(e.target.value)} className={inputCls} /></Field>}
         <div><Button variant="primary" disabled={!file && !(kind === "remittance" && text.trim())} loading={m.isPending} onClick={() => m.mutate()}>
-          Import {kind === "bank" ? "statement" : kind === "invoice" ? "invoices" : "remittance"}
+          Import {kind === "bank" ? "statement" : kind === "invoice" ? "invoices" : kind === "vendor_bill" ? "vendor bills" : "remittance"}
         </Button></div>
         {extracted != null && (
           <details className="card px-5 py-4 text-[13px]">

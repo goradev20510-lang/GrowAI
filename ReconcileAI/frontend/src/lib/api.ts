@@ -6,6 +6,27 @@ export type Summary = {
   invoices_settled: number; invoices_overpaid: number; open_review_cases: number; amount_received: number;
   amount_matched: number; amount_in_review: number; amount_unmatched: number; amount_duplicate: number;
   invoice_value: number; outstanding_value: number; tds_pending: number; review_queue: number;
+  vendor_bills: number; vendor_billed: number; vendor_paid: number; vendor_unpaid: number;
+  vendor_bills_missing: number; debit_total: number; debit_unlinked: number; debit_unlinked_count: number;
+};
+
+export type StatementLine = Txn & {
+  direction: "in" | "out"; debit_amount: number; unlinked: number; linked_to: string[];
+};
+
+export type VendorPayment = {
+  payment_id: string; transaction_id: string; bill_id: string | null; amount: number; linked_by: string;
+  notes: string | null; vendor_name: string | null; bill_number: string | null; transaction_date: string | null;
+};
+
+export type VendorBill = {
+  bill_id: string; vendor_name: string; bill_number: string; bill_date: string | null; due_date: string | null;
+  amount: number; paid: number; pending: number; status: string; bill_on_file: boolean; payments: VendorPayment[];
+};
+
+export type DebitDetail = {
+  debit: Txn & { debit_amount: number; linked: number; unlinked: number; links: VendorPayment[] };
+  suggestions: (VendorBill & { reasons: string[]; would_link: number })[];
 };
 
 export type Txn = {
@@ -111,6 +132,13 @@ export const api = {
   transaction: (id: string) => request<{ transaction: Txn; allocations: Allocation[] }>(`/transactions/${id}`),
   reconcileOne: (id: string) => post<{ outcome: string; invoice_id?: string }>(`/transactions/${id}/reconcile`),
   reverse: (id: string, notes: string) => post(`/transactions/${id}/reverse`, { notes }),
+  statement: () => request<StatementLine[]>("/statement"),
+  vendorBills: () => request<VendorBill[]>("/vendor-bills"),
+  debit: (id: string) => request<DebitDetail>(`/debits/${id}`),
+  linkDebit: (id: string, bill_id: string) => post<{ amount: number }>(`/debits/${id}/link`, { bill_id }),
+  notVendor: (id: string, notes: string) => post(`/debits/${id}/not-vendor`, { notes }),
+  unlinkPayment: (id: string, notes: string) => post(`/payments/${id}/unlink`, { notes }),
+  billOnFile: (id: string, on_file: boolean) => post(`/vendor-bills/${id}/on-file`, { on_file }),
   invoices: () => request<Invoice[]>("/invoices"),
   openInvoices: (credit: number) => request<Invoice[]>(`/invoices/open?credit=${credit}`),
   review: () => request<Case[]>("/review"),
@@ -121,7 +149,7 @@ export const api = {
   loadDemo: () => post<{ already_loaded?: boolean; invoices?: number; transactions?: number }>("/demo/load"),
   reconcile: () => post<{ total: number; matched: number; needs_review: number; unmatched: number;
     duplicates?: number }>("/reconcile"),
-  importFile: (kind: "bank" | "invoice" | "remittance", form: FormData) =>
+  importFile: (kind: "bank" | "invoice" | "remittance" | "vendor_bill", form: FormData) =>
     post<Record<string, unknown> & { success?: boolean; reason?: string; duplicate_file?: boolean }>(`/import/${kind}`, form),
   documents: () => request<{ document_id: string; filename: string; document_type: string | null; upload_time: string }[]>("/documents"),
   aging: () => request<{ as_of: string; buckets: { bucket: string; invoices: number; outstanding: number }[];

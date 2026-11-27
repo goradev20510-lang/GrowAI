@@ -10,6 +10,19 @@ export const TXN_STATUS: Record<string, { label: string; tone: Tone }> = {
   excluded: { label: "Excluded", tone: "muted" },
 };
 
+export const DEBIT_STATUS: Record<string, { label: string; tone: Tone }> = {
+  linked: { label: "Linked", tone: "ice" },
+  part_linked: { label: "Part-linked", tone: "amber" },
+  not_linked: { label: "Not linked", tone: "brick" },
+  not_vendor: { label: "Not a vendor", tone: "muted" },
+};
+
+export const BILL_STATUS: Record<string, { label: string; tone: Tone }> = {
+  paid: { label: "Paid", tone: "ice" },
+  part_paid: { label: "Part-paid", tone: "amber" },
+  unpaid: { label: "Unpaid", tone: "brick" },
+};
+
 export const INV_STATUS: Record<string, { label: string; tone: Tone }> = {
   open: { label: "Open", tone: "sea" },
   partially_paid: { label: "Part-paid", tone: "amber" },

@@ -41,8 +41,8 @@ export default function OverviewPage() {
       </p>
 
       <SectionHead title="Latest bank credits"
-        aside={<Link href="/app/credits" className="text-[14px] text-fg-2 underline hover:text-fg">All credits</Link>} />
-      <Table<Txn> rows={txns.data.slice(0, 8)} rowKey={(t) => t.transaction_id} cols={[
+        aside={<Link href="/app/statement" className="text-[14px] text-fg-2 underline hover:text-fg">Full statement</Link>} />
+      <Table<Txn> rows={txns.data.filter((t) => t.credit_amount > 0).slice(0, 8)} rowKey={(t) => t.transaction_id} cols={[
         { key: "d", head: "Value date", cell: (t) => <span className="text-fg-2">{fmtDate(t.transaction_date)}</span> },
         { key: "t", head: "Transaction", cell: (t) => <Mono>{t.transaction_id}</Mono> },
         { key: "n", head: "Narration", cell: (t) => <span className="line-clamp-1 max-w-[38ch] text-fg-2">{t.narration}</span>, className: "max-lg:hidden" },
