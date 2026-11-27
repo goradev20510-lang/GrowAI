@@ -21,7 +21,7 @@ export default function AuditPage() {
 
   return (
     <>
-      <PageHead title="Audit trail." lede="Every automated and human action, newest first, with the evidence recorded at the time." />
+      <PageHead title="Activity" lede="Every automated and human action, newest first, with the evidence recorded at the time." />
       <div className="mb-8 grid gap-3 sm:grid-cols-[1.6fr_1fr_1fr]">
         <Field label="Search">
           <span className="relative block">
@@ -62,7 +62,7 @@ function Entry({ l, open, toggle }: { l: AuditRow; open: boolean; toggle: () => 
     <li className="relative">
       <span className={clsx("absolute -left-[4.5px] top-[22px] size-2 rounded-full ring-4 ring-void", human ? "bg-ice" : "bg-fg-4")} aria-hidden />
       <button onClick={toggle} aria-expanded={open}
-        className={clsx("grid w-full cursor-pointer gap-x-6 gap-y-1 rounded-r-2xl py-4 pl-7 pr-5 text-left transition-colors md:grid-cols-[180px_1fr_auto]",
+        className={clsx("grid w-full cursor-pointer gap-x-6 gap-y-1 rounded-r-lg py-4 pl-7 pr-5 text-left transition-colors md:grid-cols-[180px_1fr_auto]",
           open ? "bg-white/[0.04]" : "hover:bg-white/[0.02]")}>
         <span className="text-[13px] text-fg-3">{fmtTs(l.created_at)}</span>
         <span className="min-w-0">
@@ -73,7 +73,7 @@ function Entry({ l, open, toggle }: { l: AuditRow; open: boolean; toggle: () => 
         <span className={clsx("text-[13px]", human ? "text-ice" : "text-fg-3")}>{l.actor}</span>
       </button>
       {open && (
-        <div className="mb-3 ml-7 mr-5 rounded-2xl border border-line bg-black/50 p-5">
+        <div className="mb-3 ml-7 mr-5 rounded-lg border border-line bg-s1 p-5">
           <pre className="overflow-auto font-mono text-[12.5px] leading-relaxed text-fg-2">{typeof l.details === "string" ? l.details : JSON.stringify(l.details, null, 2)}</pre>
           <p className="mt-3 text-[12px] text-fg-4">Log ID {l.log_id}</p>
         </div>

@@ -40,8 +40,8 @@ export function Providers({ children }: { children: React.ReactNode }) {
           position="bottom-right"
           toastOptions={{
             style: {
-              background: "#141415", color: "#f4f4f4", border: "1px solid rgb(255 255 255 / 0.16)",
-              borderRadius: 14, fontFamily: "var(--font-inter)",
+              background: "#131f3c", color: "#f5f7ff", border: "1px solid rgb(150 172 224 / 0.3)",
+              borderRadius: 8, fontFamily: "var(--font-red-hat-text)",
             },
           }}
         />

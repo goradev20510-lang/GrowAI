@@ -1,37 +1,32 @@
 @import "tailwindcss";
 
-/* ReconcileAI — "Autonomous Finances" design language.
-   Monochrome, high contrast, white-alpha hairlines, one ice-blue signal. See DESIGN.md. */
+/* ReconcileAI: flat navy, white figures, one pink signal for "needs a person". See DESIGN.md. */
 
 @theme {
-  --color-void: #000000;
-  --color-ink: #030304;
-  --color-s1: #0b0b0c;
-  --color-s2: #141415;
-  --color-s3: #1f1f21;
-  --color-s4: #2d2d2d;
+  --color-void: #0a1124;
+  --color-hero: #0b1d43;
+  --color-s1: #0e1830;
+  --color-s2: #131f3c;
+  --color-s4: #2b3a61;
 
-  --color-fg: #f4f4f4;
-  --color-fg-2: rgb(255 255 255 / 0.72);
-  --color-fg-3: rgb(255 255 255 / 0.52);
-  --color-fg-4: rgb(255 255 255 / 0.34);
+  --color-fg: #f5f7ff;
+  --color-fg-2: #c2cce6;
+  --color-fg-3: #919ebf;
+  --color-fg-4: #7683a6;
 
-  --color-line: rgb(255 255 255 / 0.1);
-  --color-line-2: rgb(255 255 255 / 0.16);
-  --color-line-3: rgb(255 255 255 / 0.28);
+  --color-line: rgb(150 172 224 / 0.16);
+  --color-line-2: rgb(150 172 224 / 0.3);
+  --color-line-3: rgb(150 172 224 / 0.5);
 
-  --color-ice: #bfd5dd;
-  --color-sea: #2596be;
-  --color-amber: #ffab00;
-  --color-brick: #e8735f;
+  --color-ice: #8fb8ff;
+  --color-sea: #52b6ea;
+  --color-ok: #25c78a;
+  --color-amber: #ffb224;
+  --color-brick: #ff5488;
 
-  --font-display: var(--font-dm-sans), ui-sans-serif, system-ui, sans-serif;
-  --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
-  --font-mono: var(--font-geist-mono), ui-monospace, monospace;
-
-  --radius-card: 18px;
-  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
-  --ease-out-quart: cubic-bezier(0.25, 1, 0.5, 1);
+  --font-display: var(--font-red-hat-display), ui-sans-serif, system-ui, sans-serif;
+  --font-sans: var(--font-red-hat-text), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-red-hat-mono), ui-monospace, monospace;
 }
 
 @layer base {
@@ -46,18 +41,17 @@
     font-family: var(--font-sans);
     font-size: 15px;
     line-height: 1.55;
-    font-feature-settings: "cv11", "ss01";
   }
   h1, h2, h3, h4 {
     font-family: var(--font-display);
-    letter-spacing: -0.035em;
-    line-height: 1.02;
-    font-weight: 500;
+    letter-spacing: -0.015em;
+    line-height: 1.15;
+    font-weight: 700;
     text-wrap: balance;
   }
   p { text-wrap: pretty; }
 
-  ::selection { background: var(--color-ice); color: #000; }
+  ::selection { background: var(--color-ice); color: var(--color-void); }
   input, textarea, select { caret-color: var(--color-ice); }
 
   :focus-visible {
@@ -78,26 +72,14 @@
 
 @layer utilities {
   .num { font-variant-numeric: tabular-nums lining-nums; font-feature-settings: "tnum", "lnum"; }
-  .hairline { border: 1px solid var(--color-line); }
   .card {
     background: var(--color-s1);
     border: 1px solid var(--color-line);
-    border-radius: var(--radius-card);
-    box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.04), 0 24px 48px -32px rgb(0 0 0 / 0.9);
+    border-radius: 8px;
   }
-  .shell { width: 100%; max-width: 1360px; margin-inline: auto; padding-inline: clamp(20px, 4vw, 48px); }
-  .grain::after {
-    content: ""; position: absolute; inset: 0; pointer-events: none; opacity: 0.06; mix-blend-mode: overlay;
-    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
-  }
+  .shell { width: 100%; max-width: 1120px; margin-inline: auto; padding-inline: clamp(20px, 4vw, 40px); }
+  .stripes { background: repeating-linear-gradient(135deg, var(--color-ice) 0 3px, rgb(143 184 255 / 0.35) 3px 6px); }
 }
-
-/* Lenis */
-html.lenis, html.lenis body { height: auto; }
-.lenis.lenis-smooth { scroll-behavior: auto !important; }
-.lenis.lenis-stopped { overflow: hidden; }
-
-@keyframes marquee { to { transform: translate3d(-50%, 0, 0); } }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important;

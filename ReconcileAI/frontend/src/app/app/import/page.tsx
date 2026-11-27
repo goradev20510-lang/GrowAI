@@ -22,12 +22,12 @@ const KINDS: { value: Kind; label: string; accept: string[]; note: string }[] = 
 export default function ImportPage() {
   return (
     <>
-      <PageHead title="Import." lede="Bring in the three sources reconciliation needs. Re-uploading the same file is detected and skipped." />
+      <PageHead title="Import" lede="Bring in the three sources reconciliation needs. Re-uploading the same file is detected and skipped." />
       <Tabs.Root defaultValue="bank">
         <Tabs.List className="flex gap-1 border-b border-line" aria-label="Document type">
           {KINDS.map((k) => (
             <Tabs.Trigger key={k.value} value={k.value}
-              className="relative -mb-px cursor-pointer border-b border-transparent px-4 pb-3.5 pt-1 text-[14px] text-fg-3 transition-colors hover:text-fg data-[state=active]:border-fg data-[state=active]:text-fg">
+              className="relative -mb-px cursor-pointer border-b border-transparent px-4 pb-3.5 pt-1 text-[14px] text-fg-3 transition-colors hover:text-fg data-[state=active]:border-brick data-[state=active]:text-fg">
               {k.label}
             </Tabs.Trigger>
           ))}
@@ -84,12 +84,12 @@ function Uploader({ kind, accept, note }: { kind: Kind; accept: string[]; note: 
     <div className="grid gap-8 lg:grid-cols-[1.4fr_1fr]">
       <div className="flex flex-col gap-5">
         <div {...dz.getRootProps()}
-          className={clsx("card grain relative grid min-h-[240px] cursor-pointer place-items-center overflow-hidden border-dashed p-10 text-center transition-colors duration-200",
+          className={clsx("card grid min-h-[200px] cursor-pointer place-items-center border-dashed p-10 text-center transition-colors duration-200",
             dz.isDragActive ? "border-ice/70 bg-ice/[0.04]" : "hover:border-line-3")}>
           <input {...dz.getInputProps()} />
           <div>
             <FileArrowUp weight="thin" className={clsx("mx-auto size-12 transition-transform duration-500 ease-[var(--ease-out-expo)]", dz.isDragActive ? "-translate-y-1 text-ice" : "text-fg-3")} />
-            <p className="mt-4 font-display text-[1.35rem] tracking-[-0.02em]">{file ? file.name : dz.isDragActive ? "Drop it." : "Drop a file, or click to choose."}</p>
+            <p className="mt-4 text-[1.05rem] font-semibold">{file ? file.name : dz.isDragActive ? "Drop it" : "Drop a file, or click to choose"}</p>
             <p className="mt-2 text-[13px] text-fg-3">{file ? `${(file.size / 1024).toFixed(1)} KB` : accept.join("  ·  ")}</p>
           </div>
         </div>
@@ -104,7 +104,7 @@ function Uploader({ kind, accept, note }: { kind: Kind; accept: string[]; note: 
       <div className="flex flex-col gap-5">
         <p className="text-[14.5px] leading-relaxed text-fg-2">{note}</p>
         {kind === "bank" && <Field label="Bank"><input value={bank} onChange={(e) => setBank(e.target.value)} className={inputCls} /></Field>}
-        <div><Button variant="primary" arrow disabled={!file && !(kind === "remittance" && text.trim())} loading={m.isPending} onClick={() => m.mutate()}>
+        <div><Button variant="primary" disabled={!file && !(kind === "remittance" && text.trim())} loading={m.isPending} onClick={() => m.mutate()}>
           Import {kind === "bank" ? "statement" : kind === "invoice" ? "invoices" : "remittance"}
         </Button></div>
         {extracted != null && (
@@ -122,7 +122,7 @@ function Documents() {
   const q = useQuery({ queryKey: ["documents"], queryFn: api.documents });
   return (
     <>
-      <SectionHead title="Imported documents." />
+      <SectionHead title="Imported documents" />
       <Table rows={q.data ?? []} rowKey={(d) => d.document_id} max={480} empty="Nothing imported yet." cols={[
         { key: "u", head: "Uploaded", cell: (d) => <span className="text-fg-2">{fmtTs(d.upload_time)}</span> },
         { key: "f", head: "File", cell: (d) => d.filename },

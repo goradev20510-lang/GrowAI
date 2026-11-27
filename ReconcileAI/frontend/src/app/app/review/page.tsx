@@ -42,7 +42,7 @@ export default function ReviewPage() {
   }, [shown, current]);
 
   const head = (
-    <PageHead title="Review queue." lede="Credits the engine would not settle on its own. A named reviewer approves, rejects or reassigns each one, and every decision goes to the audit trail." />
+    <PageHead title="Needs review" lede="Credits the engine would not settle on its own. A named reviewer approves, rejects or reassigns each one, and every decision goes to the audit trail." />
   );
   if (queue.error) return <>{head}<ErrorNote error={queue.error} /></>;
   if (!queue.data) return <>{head}<Skeleton className="h-[520px]" /></>;
@@ -57,7 +57,7 @@ export default function ReviewPage() {
           <Pills value={filter} onChange={(v) => { setFilter(v); setPicked(null); }}
             options={[{ value: "all", label: "All", count: cases.length }, ...counts.map(([k, n]) => ({ value: k, label: excLabel(k), count: n }))]} />
           <div className="mt-6 grid items-start gap-5 lg:grid-cols-[minmax(300px,0.8fr)_1.6fr]">
-            <div className="card lg:sticky lg:top-[136px]">
+            <div className="card lg:sticky lg:top-[72px]">
               <p className="flex items-center justify-between border-b border-line px-5 py-3.5 text-[12.5px] text-fg-3">
                 <span>{shown.length} credits, largest first</span>
                 <span className="hidden font-mono text-[11px] text-fg-4 lg:inline">J / K to move</span>
@@ -134,27 +134,27 @@ function CaseView({ id, stale }: { id: string; stale: string[] }) {
               {stale.length > 0 && ` · ${stale.length} older open case${stale.length > 1 ? "s" : ""} for this credit will close with your decision`}
             </p>
           </div>
-          <span className="rounded-full border border-amber/30 bg-amber/10 px-3 py-1 text-[13px] font-medium text-amber">{excLabel(c.exception_type)}</span>
+          <span className="rounded border border-amber px-2 py-0.5 text-[12.5px] font-semibold text-amber">{excLabel(c.exception_type)}</span>
         </div>
 
         <div className="mt-8 grid gap-8 md:grid-cols-2">
           <div>
             <p className="text-[13px] text-fg-3">Bank credit</p>
-            <p className="num mt-1 font-display text-[2.2rem] tracking-[-0.04em]">{inr(credit)}</p>
+            <p className="num mt-1 font-display text-[2.2rem] font-bold tracking-tight">{inr(credit)}</p>
             <div className="mt-4"><KV rows={[["Value date", fmtDate(t.transaction_date)], ["Bank", t.bank_name], ["UTR", t.utr, true], ["Narration", t.narration, true]]} /></div>
           </div>
           <div>
             {inv ? (
               <>
                 <p className="text-[13px] text-fg-3">Outstanding on {inv.invoice_id}</p>
-                <p className="num mt-1 font-display text-[2.2rem] tracking-[-0.04em]">{inr(inv.outstanding_amount)}</p>
+                <p className="num mt-1 font-display text-[2.2rem] font-bold tracking-tight">{inr(inv.outstanding_amount)}</p>
                 <div className="mt-4"><KV rows={[["Customer", inv.customer_name], ["Invoice date", fmtDate(inv.invoice_date)], ["Due", fmtDate(inv.due_date)],
                   ["Invoice total", inr(inv.total_amount)], ["Taxable value", inr(inv.taxable_amount)], ["Status", invStatus(inv.status).label]]} /></div>
               </>
             ) : (
               <>
                 <p className="text-[13px] text-fg-3">Suggested invoice</p>
-                <p className="mt-1 font-display text-[2.2rem] tracking-[-0.04em] text-fg-3">None</p>
+                <p className="mt-1 font-display text-[2.2rem] font-bold tracking-tight text-fg-3">None</p>
                 <p className="mt-4 text-[14px] text-fg-2">The engine could not point to an invoice. Check the remittance advice or ask the payer, then assign one below.</p>
               </>
             )}
@@ -193,7 +193,7 @@ function CaseView({ id, stale }: { id: string; stale: string[] }) {
               <div className="mt-5">
                 <p className="mb-2 text-[12.5px] text-fg-3">Verbatim excerpt the figures were extracted from</p>
                 {d.remittance.evidence_text.map((x, i) => (
-                  <blockquote key={i} className="mb-2 rounded-xl border border-line bg-black/40 px-4 py-3 font-mono text-[12.5px] leading-relaxed text-fg-2">{x}</blockquote>
+                  <blockquote key={i} className="mb-2 rounded-md border border-line bg-void px-4 py-3 font-mono text-[12.5px] leading-relaxed text-fg-2">{x}</blockquote>
                 ))}
               </div>
             )}
@@ -302,7 +302,7 @@ function Decision({ d }: { d: CaseDetail }) {
 
   return (
     <div className="card p-[clamp(22px,3vw,36px)]">
-      <h3 className="text-[1.5rem]">Decision.</h3>
+      <h3 className="text-[1.15rem]">Decision</h3>
       {!who && <div className="mt-4"><Notice tone="amber">Enter your name in the reviewer field above. Every decision is recorded against it.</Notice></div>}
       <div className="mt-6">
         <Field label="Note for the audit trail" hint="Required for anything except approving.">
@@ -373,7 +373,7 @@ function InvoicePicker({ credit, chosen, setChosen }: { credit: number; chosen: 
     !search || `${i.invoice_id} ${i.customer_name ?? ""}`.toLowerCase().includes(search.toLowerCase())).slice(0, 40);
   const toggle = (id: string) => setChosen(chosen.includes(id) ? chosen.filter((x) => x !== id) : [...chosen, id]);
   return (
-    <div className="mt-4 overflow-hidden rounded-2xl border border-line">
+    <div className="mt-4 overflow-hidden rounded-lg border border-line">
       <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Type an invoice number or customer"
         className="h-11 w-full border-b border-line bg-transparent px-4 text-[14px] placeholder:text-fg-4 focus:outline-none" aria-label="Search invoices" />
       <ul className="max-h-56 overflow-auto">
@@ -383,7 +383,7 @@ function InvoicePicker({ credit, chosen, setChosen }: { credit: number; chosen: 
             <li key={i.invoice_id}>
               <button onClick={() => toggle(i.invoice_id)} aria-pressed={order >= 0}
                 className={clsx("flex w-full cursor-pointer items-center gap-4 px-4 py-2.5 text-left text-[13.5px] transition-colors", order >= 0 ? "bg-ice/[0.08]" : "hover:bg-white/[0.03]")}>
-                <span className={clsx("num grid size-5 shrink-0 place-items-center rounded-full border text-[11px]", order >= 0 ? "border-ice bg-ice text-black" : "border-line-3")}>
+                <span className={clsx("num grid size-5 shrink-0 place-items-center rounded-full border text-[11px]", order >= 0 ? "border-ice bg-ice text-void" : "border-line-3")}>
                   {order >= 0 ? order + 1 : ""}
                 </span>
                 <span className="font-mono text-[12.5px]">{i.invoice_id}</span>

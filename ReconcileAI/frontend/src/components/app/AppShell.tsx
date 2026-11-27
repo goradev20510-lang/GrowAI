@@ -5,24 +5,22 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Command } from "cmdk";
-import { motion } from "motion/react";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
-import { MagnifyingGlass, Play, Database, UserCircle } from "@phosphor-icons/react";
 import { api, downloadReport } from "@/lib/api";
 import { AccountButton } from "@/components/app/Auth";
 import { useReviewer } from "@/components/providers";
-import { Logo } from "@/components/Logo";
-import { Button, inputCls } from "@/components/ui";
+import { HeroStats } from "@/components/app/HeroStats";
+import { Button } from "@/components/ui";
 
 const NAV = [
+  { href: "/app/review", label: "Needs review" },
   { href: "/app/overview", label: "Overview" },
-  { href: "/app/review", label: "Review" },
   { href: "/app/credits", label: "Bank credits" },
   { href: "/app/import", label: "Import" },
   { href: "/app/reports", label: "Reports" },
-  { href: "/app/audit", label: "Audit trail" },
-  { href: "/app/ask", label: "Ask the data" },
+  { href: "/app/audit", label: "Activity" },
+  { href: "/app/ask", label: "Ask" },
 ];
 
 export function useBatchActions() {
@@ -66,54 +64,45 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="min-h-dvh">
-      <header className="sticky top-0 z-40 border-b border-line bg-void/80 backdrop-blur-xl">
-        <div className="shell flex h-16 items-center gap-6">
-          <Logo href="/" />
-          <nav className="-mx-2 flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto px-2 [scrollbar-width:none]" aria-label="Workspace">
-            {NAV.map((n) => {
-              const active = path?.startsWith(n.href);
-              const count = n.href === "/app/review" ? s?.review_queue : undefined;
-              return (
-                <Link key={n.href} href={n.href} aria-current={active ? "page" : undefined}
-                  className={clsx("relative flex h-9 shrink-0 items-center gap-1.5 rounded-full px-3.5 text-[13.5px] transition-colors duration-150",
-                    active ? "text-fg" : "text-fg-3 hover:text-fg")}>
-                  {active && (
-                    <motion.span layoutId="nav-pill" className="absolute inset-0 rounded-full bg-white/[0.08]"
-                      transition={{ type: "spring", bounce: 0.15, duration: 0.45 }} />
-                  )}
-                  <span className="relative">{n.label}</span>
-                  {!!count && <span className="num relative rounded-full bg-amber/15 px-1.5 text-[11.5px] text-amber">{count}</span>}
-                </Link>
-              );
-            })}
-          </nav>
-          <button onClick={() => setCmd(true)}
-            className="hidden h-9 shrink-0 cursor-pointer items-center gap-2 rounded-full border border-line-2 px-3 text-[13px] text-fg-3 transition-colors hover:border-line-3 hover:text-fg lg:flex">
-            <MagnifyingGlass className="size-4" /> Go to <kbd className="font-mono text-[11px] text-fg-4">⌘K</kbd>
-          </button>
-          <AccountButton />
-        </div>
-        <div className="border-t border-line">
-          <div className="shell flex flex-wrap items-center gap-3 py-2.5">
-            <label className="flex items-center gap-2 text-[13px] text-fg-3">
-              <UserCircle className="size-5" />
-              <span className="sr-only">Reviewer</span>
-              <input value={reviewer} onChange={(e) => setReviewer(e.target.value)} placeholder="Reviewer name" title="Recorded against every approval, rejection and reassignment."
-                className={clsx(inputCls, "h-8 w-[220px] rounded-full text-[13px]", !reviewer.trim() && "border-amber/40")} />
-            </label>
-            <span className="num ml-auto hidden text-[12.5px] text-fg-4 sm:block">
-              {s ? `${s.total_transactions} credits · ${s.invoices_total} invoices` : ""}
-            </span>
-            <Button size="sm" variant="quiet" onClick={() => demo.mutate()} loading={demo.isPending}>
-              {!demo.isPending && <Database className="size-4" />} Load demo data
-            </Button>
-            <Button size="sm" variant="primary" onClick={() => reconcile.mutate()} loading={reconcile.isPending}>
-              {!reconcile.isPending && <Play weight="fill" className="size-3.5" />} Run reconciliation
-            </Button>
+      <header className="bg-hero">
+        <div className="shell pb-10 pt-8">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <h1 className="text-[2.4rem]"><Link href="/">ReconcileAI</Link></h1>
+              <p className="mt-1 max-w-[60ch] text-[16px] text-fg-2">
+                Bank money in, matched to open invoices and checked line by line against the bank statement.
+              </p>
+            </div>
+            <AccountButton />
           </div>
+          <div className="mt-5 flex flex-wrap items-center gap-2.5">
+            <input value={reviewer} onChange={(e) => setReviewer(e.target.value)} placeholder="Your name (reviewer)"
+              aria-label="Reviewer name" title="Recorded against every approval, rejection and reassignment."
+              className={clsx("h-10 w-[210px] rounded-full border bg-transparent px-4 text-[14px] text-fg placeholder:text-fg-3",
+                reviewer.trim() ? "border-line-3" : "border-amber/60")} />
+            <Button variant="primary" onClick={() => reconcile.mutate()} loading={reconcile.isPending}>Run reconciliation</Button>
+            <Button onClick={() => demo.mutate()} loading={demo.isPending}>Load demo data</Button>
+          </div>
+          <HeroStats />
         </div>
       </header>
-      <main className="shell pb-32 pt-10">{children}</main>
+      <nav className="sticky top-0 z-40 border-b border-line bg-void" aria-label="Workspace">
+        <div className="shell flex gap-1 overflow-x-auto [scrollbar-width:none]">
+          {NAV.map((n) => {
+            const active = path?.startsWith(n.href);
+            const count = n.href === "/app/review" ? s?.review_queue : undefined;
+            return (
+              <Link key={n.href} href={n.href} aria-current={active ? "page" : undefined}
+                className={clsx("flex h-14 shrink-0 items-center gap-2 border-b-[3px] px-3.5 text-[15px] font-bold transition-colors",
+                  active ? "border-brick text-fg" : "border-transparent text-fg-3 hover:text-fg")}>
+                {n.label}
+                {!!count && <span className="num grid h-6 min-w-6 place-items-center rounded-full bg-brick px-1.5 text-[12px] text-white">{count}</span>}
+              </Link>
+            );
+          })}
+        </div>
+      </nav>
+      <main className="shell pb-24 pt-8">{children}</main>
       <CommandBar open={cmd} setOpen={setCmd} onReconcile={() => reconcile.mutate()} onDemo={() => demo.mutate()} />
     </div>
   );
@@ -124,11 +113,11 @@ function CommandBar({ open, setOpen, onReconcile, onDemo }: {
 }) {
   const router = useRouter();
   const go = (fn: () => void) => () => { setOpen(false); fn(); };
-  const item = "flex h-11 cursor-pointer items-center rounded-xl px-3 text-[14px] text-fg-2 data-[selected=true]:bg-white/[0.07] data-[selected=true]:text-fg";
+  const item = "flex h-11 cursor-pointer items-center rounded-md px-3 text-[14px] text-fg-2 data-[selected=true]:bg-white/[0.07] data-[selected=true]:text-fg";
   return (
     <Command.Dialog open={open} onOpenChange={setOpen} label="Go to"
-      overlayClassName="fixed inset-0 z-[60] bg-black/60 backdrop-blur-sm"
-      contentClassName="fixed left-1/2 top-[18vh] z-[61] w-[min(560px,92vw)] -translate-x-1/2 overflow-hidden rounded-2xl border border-line-2 bg-s2 shadow-[0_40px_80px_-20px_rgb(0_0_0/0.8)]">
+      overlayClassName="fixed inset-0 z-[60] bg-black/60"
+      contentClassName="fixed left-1/2 top-[18vh] z-[61] w-[min(560px,92vw)] -translate-x-1/2 overflow-hidden rounded-lg border border-line-2 bg-s2">
       <Command.Input placeholder="Jump to a page or run an action" className="h-14 w-full border-b border-line bg-transparent px-5 text-[15px] text-fg placeholder:text-fg-4 focus:outline-none" />
       <Command.List className="max-h-[50vh] overflow-auto p-2">
         <Command.Empty className="px-3 py-6 text-center text-[14px] text-fg-3">No match.</Command.Empty>

@@ -2,7 +2,7 @@
 
 import clsx from "clsx";
 import Link from "next/link";
-import { ArrowUpRight, CircleNotch } from "@phosphor-icons/react";
+import { CircleNotch } from "@phosphor-icons/react";
 import type { Tone } from "@/lib/vocab";
 import { ApiError } from "@/lib/api";
 
@@ -12,82 +12,65 @@ type BtnProps = React.ButtonHTMLAttributes<HTMLButtonElement> & {
   variant?: "primary" | "ghost" | "quiet" | "danger";
   size?: "sm" | "md" | "lg";
   loading?: boolean;
-  arrow?: boolean;
 };
 
 const btnBase =
-  "group relative inline-flex select-none items-center justify-center gap-2 whitespace-nowrap rounded-full font-medium " +
-  "transition-[background,color,border-color,transform,opacity] duration-200 ease-[var(--ease-out-quart)] " +
-  "active:scale-[0.98] disabled:pointer-events-none disabled:opacity-40 cursor-pointer";
+  "inline-flex select-none items-center justify-center gap-2 whitespace-nowrap rounded-md font-semibold " +
+  "transition-colors duration-150 disabled:pointer-events-none disabled:opacity-40 cursor-pointer";
 
 const btnVariant = {
-  primary: "bg-fg text-black hover:bg-white",
-  ghost: "border border-line-2 text-fg hover:border-line-3 hover:bg-white/[0.04]",
-  quiet: "text-fg-2 hover:text-fg hover:bg-white/[0.05]",
-  danger: "border border-brick/40 text-brick hover:bg-brick/10",
+  primary: "bg-white text-hero hover:bg-fg-2",
+  ghost: "border border-line-2 text-fg hover:border-line-3 hover:bg-white/[0.05]",
+  quiet: "text-fg-2 hover:text-fg hover:bg-white/[0.06]",
+  danger: "border border-brick/50 text-brick hover:bg-brick/10",
 };
-const btnSize = { sm: "h-8 px-3.5 text-[13px]", md: "h-10 px-5 text-sm", lg: "h-13 px-7 text-[15px]" };
+const btnSize = { sm: "h-8 px-3 text-[13px]", md: "h-10 px-4 text-sm", lg: "h-11 px-5 text-[15px]" };
 
-export function Button({ variant = "ghost", size = "md", loading, arrow, className, children, ...rest }: BtnProps) {
+export function Button({ variant = "ghost", size = "md", loading, className, children, ...rest }: BtnProps) {
   return (
     <button className={clsx(btnBase, btnVariant[variant], btnSize[size], className)} {...rest}>
       {loading && <CircleNotch className="size-4 animate-spin" />}
       {children}
-      {arrow && <Arrow />}
     </button>
   );
 }
 
-export function LinkButton({ href, variant = "ghost", size = "md", arrow, className, children }: {
-  href: string; variant?: BtnProps["variant"]; size?: BtnProps["size"]; arrow?: boolean; className?: string;
-  children: React.ReactNode;
+export function LinkButton({ href, variant = "ghost", size = "md", className, children }: {
+  href: string; variant?: BtnProps["variant"]; size?: BtnProps["size"]; className?: string; children: React.ReactNode;
 }) {
   return (
     <Link href={href} className={clsx(btnBase, btnVariant[variant], btnSize[size], className)}>
       {children}
-      {arrow && <Arrow />}
     </Link>
-  );
-}
-
-function Arrow() {
-  return (
-    <span className="relative inline-flex size-4 overflow-hidden">
-      <ArrowUpRight weight="bold" className="absolute inset-0 size-4 transition-transform duration-300 ease-[var(--ease-out-expo)] group-hover:translate-x-4 group-hover:-translate-y-4" />
-      <ArrowUpRight weight="bold" className="absolute inset-0 size-4 -translate-x-4 translate-y-4 transition-transform duration-300 ease-[var(--ease-out-expo)] group-hover:translate-x-0 group-hover:translate-y-0" />
-    </span>
   );
 }
 
 /* ── Status ──────────────────────────────────────────────────────────────── */
 
 const toneDot: Record<Tone, string> = {
-  ice: "bg-ice", amber: "bg-amber", brick: "bg-brick", muted: "bg-fg-4", sea: "bg-sea",
+  ice: "bg-ok", amber: "bg-amber", brick: "bg-brick", muted: "bg-fg-4", sea: "bg-sea",
 };
-const toneText: Record<Tone, string> = {
-  ice: "text-ice", amber: "text-amber", brick: "text-brick", muted: "text-fg-3", sea: "text-[#7cc4de]",
+const toneBadge: Record<Tone, string> = {
+  ice: "border-ok text-ok", amber: "border-amber text-amber", brick: "border-brick text-brick",
+  muted: "border-line-3 text-fg-3", sea: "border-sea text-sea",
 };
 
 export function Status({ label, tone }: { label: string; tone: Tone }) {
   return (
-    <span className={clsx("inline-flex items-center gap-2 text-[13px] font-medium", toneText[tone])}>
-      <span className={clsx("size-1.5 rounded-full", toneDot[tone])} aria-hidden />
+    <span className={clsx("inline-flex items-center whitespace-nowrap rounded border px-2 py-0.5 text-[12.5px] font-semibold", toneBadge[tone])}>
       {label}
     </span>
   );
 }
-export const toneColor: Record<Tone, string> = {
-  ice: "#bfd5dd", amber: "#ffab00", brick: "#e8735f", muted: "rgb(255 255 255 / 0.3)", sea: "#2596be",
-};
 
 /* ── Page structure ──────────────────────────────────────────────────────── */
 
 export function PageHead({ title, lede, actions }: { title: string; lede?: string; actions?: React.ReactNode }) {
   return (
-    <header className="flex flex-wrap items-end justify-between gap-x-10 gap-y-5 pb-10 pt-4 md:pb-14">
-      <div className="max-w-3xl">
-        <h1 className="text-[clamp(2.4rem,5.2vw,4.4rem)] text-fg">{title}</h1>
-        {lede && <p className="mt-5 max-w-[60ch] text-[15px] leading-relaxed text-fg-2">{lede}</p>}
+    <header className="flex flex-wrap items-end justify-between gap-x-10 gap-y-4 pb-6">
+      <div>
+        <h2 className="text-[1.35rem]">{title}</h2>
+        {lede && <p className="mt-1 max-w-[72ch] text-[14px] text-fg-3">{lede}</p>}
       </div>
       {actions && <div className="flex flex-wrap items-center gap-2">{actions}</div>}
     </header>
@@ -96,8 +79,8 @@ export function PageHead({ title, lede, actions }: { title: string; lede?: strin
 
 export function SectionHead({ title, aside }: { title: string; aside?: React.ReactNode }) {
   return (
-    <div className="mb-5 mt-16 flex items-end justify-between gap-6 first:mt-0">
-      <h2 className="text-[clamp(1.5rem,2.4vw,2rem)]">{title}</h2>
+    <div className="mb-3 mt-12 flex items-end justify-between gap-6 first:mt-0">
+      <h2 className="text-[1.15rem]">{title}</h2>
       {aside}
     </div>
   );
@@ -111,16 +94,16 @@ export function Table<T>({ rows, cols, rowKey, onRow, selected, max, empty = "No
   rows: T[]; cols: Col<T>[]; rowKey: (r: T) => string; onRow?: (r: T) => void; selected?: string | null;
   max?: number; empty?: string;
 }) {
-  if (!rows.length) return <p className="card px-6 py-10 text-center text-fg-3">{empty}</p>;
+  if (!rows.length) return <p className="border-y border-line px-3 py-10 text-center text-fg-3">{empty}</p>;
   return (
-    <div className="card overflow-hidden">
+    <div className="overflow-hidden">
       <div className={clsx("overflow-auto", max && "max-h-[--max]")} style={max ? ({ maxHeight: max } as React.CSSProperties) : undefined}>
         <table className="w-full border-collapse text-left text-[14px]">
-          <thead className="sticky top-0 z-10 bg-s1">
+          <thead className="sticky top-0 z-10 bg-void">
             <tr>
               {cols.map((c) => (
                 <th key={c.key} scope="col"
-                  className={clsx("border-b border-line px-5 py-3.5 text-[12px] font-medium text-fg-3", c.num && "text-right", c.className)}>
+                  className={clsx("border-b border-line px-3 py-3 text-[13px] font-semibold text-fg-3", c.num && "text-right", c.className)}>
                   {c.head}
                 </th>
               ))}
@@ -140,7 +123,7 @@ export function Table<T>({ rows, cols, rowKey, onRow, selected, max, empty = "No
                     onRow && "cursor-pointer hover:bg-white/[0.03] focus-visible:bg-white/[0.04] focus-visible:outline-none",
                     active && "bg-white/[0.06] hover:bg-white/[0.06]")}>
                   {cols.map((c) => (
-                    <td key={c.key} className={clsx("px-5 py-3.5 align-middle", c.num && "num text-right", c.className)}>{c.cell(r)}</td>
+                    <td key={c.key} className={clsx("px-3 py-4 align-middle", c.num && "num text-right", c.className)}>{c.cell(r)}</td>
                   ))}
                 </tr>
               );
@@ -176,7 +159,7 @@ export function KV({ rows }: { rows: [string, React.ReactNode, boolean?][] }) {
 /* ── Feedback ────────────────────────────────────────────────────────────── */
 
 export function Skeleton({ className }: { className?: string }) {
-  return <div className={clsx("animate-pulse rounded-xl bg-white/[0.05]", className)} />;
+  return <div className={clsx("animate-pulse rounded-lg bg-white/[0.05]", className)} />;
 }
 
 export function ErrorNote({ error }: { error: unknown }) {
@@ -191,7 +174,7 @@ export function ErrorNote({ error }: { error: unknown }) {
 
 export function Notice({ tone = "muted", children }: { tone?: Tone; children: React.ReactNode }) {
   return (
-    <div className="flex gap-3 rounded-2xl border border-line bg-white/[0.02] px-5 py-4 text-[14px] text-fg-2">
+    <div className="flex gap-3 rounded-lg border border-line bg-white/[0.02] px-5 py-4 text-[14px] text-fg-2">
       <span className={clsx("mt-2 size-1.5 shrink-0 rounded-full", toneDot[tone])} aria-hidden />
       <div>{children}</div>
     </div>
@@ -201,7 +184,7 @@ export function Notice({ tone = "muted", children }: { tone?: Tone; children: Re
 /* ── Inputs ──────────────────────────────────────────────────────────────── */
 
 export const inputCls =
-  "h-10 w-full rounded-xl border border-line-2 bg-s1 px-3.5 text-[14px] text-fg placeholder:text-fg-4 " +
+  "h-10 w-full rounded-md border border-line-2 bg-s1 px-3.5 text-[14px] text-fg placeholder:text-fg-4 " +
   "transition-colors duration-150 hover:border-line-3 focus:border-ice/60 focus:outline-none";
 
 export function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
@@ -221,8 +204,8 @@ export function Pills<T extends string>({ value, onChange, options }: {
     <div role="radiogroup" className="flex flex-wrap gap-1.5">
       {options.map((o) => (
         <button key={o.value} role="radio" aria-checked={value === o.value} onClick={() => onChange(o.value)}
-          className={clsx("h-8 cursor-pointer rounded-full border px-3.5 text-[13px] transition-colors duration-150",
-            value === o.value ? "border-fg bg-fg text-black" : "border-line-2 text-fg-2 hover:border-line-3 hover:text-fg")}>
+          className={clsx("h-8 cursor-pointer rounded-md border px-3 text-[13px] transition-colors duration-150",
+            value === o.value ? "border-white bg-white text-hero" : "border-line-2 text-fg-2 hover:border-line-3 hover:text-fg")}>
           {o.label}
           {o.count !== undefined && <span className="num ml-1.5 opacity-60">{o.count}</span>}
         </button>

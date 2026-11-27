@@ -30,7 +30,7 @@ export default function CreditsPage() {
   const rows = txns.filter((t) => (filter === "all" || t.status === filter) &&
     (!search || `${t.transaction_id} ${t.utr ?? ""} ${t.narration ?? ""}`.toLowerCase().includes(search.toLowerCase())));
 
-  const head = <PageHead title="Bank credits." lede="Every credit line from imported statements, and the invoices each one was applied to." />;
+  const head = <PageHead title="Bank credits" lede="Every credit line from imported statements, and the invoices each one was applied to." />;
   if (q.error) return <>{head}<ErrorNote error={q.error} /></>;
   if (!q.data) return <>{head}<Skeleton className="h-[520px]" /></>;
   if (!txns.length) return <>{head}<EmptyLedger title="No bank credits yet." body="Import a bank statement to see its credit lines here, or load the synthetic demo dataset." /></>;
@@ -45,7 +45,7 @@ export default function CreditsPage() {
         <label className="relative w-full sm:w-[300px]">
           <MagnifyingGlass className="pointer-events-none absolute left-3.5 top-1/2 size-4 -translate-y-1/2 text-fg-4" />
           <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Transaction, UTR or narration"
-            aria-label="Search credits" className={clsx(inputCls, "rounded-full pl-10")} />
+            aria-label="Search credits" className={clsx(inputCls, "pl-10")} />
         </label>
       </div>
       <Table<Txn> rows={rows} rowKey={(t) => t.transaction_id} selected={picked} max={560}
@@ -96,7 +96,7 @@ function Detail({ id }: { id: string }) {
     <div className="card grid gap-10 p-[clamp(22px,3vw,40px)] lg:grid-cols-[1fr_2fr]">
       <div>
         <div className="flex items-center gap-3"><Mono>{t.transaction_id}</Mono><Status {...txnStatus(t.status)} /></div>
-        <p className="num mt-3 font-display text-[2.4rem] tracking-[-0.04em]">{inr(t.credit_amount)}</p>
+        <p className="num mt-3 font-display text-[2.4rem] font-bold tracking-tight">{inr(t.credit_amount)}</p>
         <div className="mt-5"><KV rows={[["Value date", fmtDate(t.transaction_date)], ["Bank", t.bank_name], ["Account", t.account_number, true], ["UTR", t.utr, true], ["Narration", t.narration, true]]} /></div>
       </div>
       <div>

@@ -18,12 +18,12 @@ const TABS = ["Summary", "Receivables ageing", "Customers", "TDS register", "Inv
 export default function ReportsPage() {
   return (
     <>
-      <PageHead title="Reports." lede="Ledger figures for month-end: where the cash went, what is still owed, how old it is, and which tax deductions still need evidence." />
+      <PageHead title="Reports" lede="Ledger figures for month-end: where the cash went, what is still owed, how old it is, and which tax deductions still need evidence." />
       <Tabs.Root defaultValue={TABS[0]}>
         <Tabs.List className="flex gap-1 overflow-x-auto border-b border-line [scrollbar-width:none]" aria-label="Report">
           {TABS.map((t) => (
             <Tabs.Trigger key={t} value={t}
-              className="-mb-px shrink-0 cursor-pointer border-b border-transparent px-4 pb-3.5 pt-1 text-[14px] text-fg-3 transition-colors hover:text-fg data-[state=active]:border-fg data-[state=active]:text-fg">
+              className="shrink-0 cursor-pointer border-b-2 border-transparent px-4 pb-3.5 pt-1 text-[14px] text-fg-3 transition-colors hover:text-fg data-[state=active]:border-brick data-[state=active]:text-fg">
               {t}
             </Tabs.Trigger>
           ))}
@@ -82,7 +82,7 @@ function Summary() {
       <div className="card mt-6 p-[clamp(22px,3vw,36px)]">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
-            <h3 className="text-[1.5rem]">Management summary.</h3>
+            <h3 className="text-[1.15rem]">Management summary</h3>
             <p className="mt-1.5 text-[13px] text-fg-3">A draft written by the model from the figures above. Check every number against the tables before you send it.</p>
           </div>
           <Button onClick={() => draft.mutate()} loading={draft.isPending}>Draft summary</Button>
@@ -115,7 +115,7 @@ function Ageing() {
             <span className="text-[14px] text-fg-2">{AGEING_LABELS[b.bucket] ?? b.bucket}</span>
             <span className="h-2.5 overflow-hidden rounded-full bg-white/[0.05]">
               <motion.span className="block h-full origin-left rounded-full" style={{ width: `${(b.outstanding / max) * 100}%`,
-                background: i === 0 ? "#bfd5dd" : i < 3 ? "#ffab00" : "#e8735f", opacity: 0.35 + 0.65 * (b.outstanding / max) }}
+                background: i === 0 ? "#25c78a" : i < 3 ? "#ffb224" : "#ff5488", opacity: 0.35 + 0.65 * (b.outstanding / max) }}
                 initial={{ scaleX: 0 }} whileInView={{ scaleX: 1 }} viewport={{ once: true }}
                 transition={{ duration: 0.9, delay: i * 0.06, ease: [0.16, 1, 0.3, 1] }} />
             </span>
@@ -123,7 +123,7 @@ function Ageing() {
           </div>
         ))}
       </div>
-      <SectionHead title="By customer." />
+      <SectionHead title="By customer" />
       <Table rows={by_customer} rowKey={(r) => String(r.customer_name)} max={520} cols={[
         { key: "c", head: "Customer", cell: (r) => r.customer_name },
         ...Object.keys(AGEING_LABELS).map((k, i) => ({ key: k, head: labels[i].replace(" overdue", ""), num: true,
@@ -192,10 +192,10 @@ function Tds() {
         <>
           <div className="card mb-6 grid divide-line sm:grid-cols-3 sm:divide-x">
             {[["Awaiting certificate", sum((r) => !["verified", "rejected"].includes(r.tds_status ?? "")), "text-amber"],
-              ["Verified", sum((r) => r.tds_status === "verified"), "text-ice"], ["Rejected", sum((r) => r.tds_status === "rejected"), "text-brick"]].map(([l, v, c]) => (
+              ["Verified", sum((r) => r.tds_status === "verified"), "text-ok"], ["Rejected", sum((r) => r.tds_status === "rejected"), "text-brick"]].map(([l, v, c]) => (
               <div key={String(l)} className="border-b border-line px-7 py-6 last:border-b-0 sm:border-b-0">
                 <p className="text-[13px] text-fg-3">{l}</p>
-                <p className={clsx("num mt-2 font-display text-[1.9rem] tracking-[-0.04em]", String(c))}>{inr(Number(v))}</p>
+                <p className={clsx("num mt-2 font-display text-[1.9rem] font-bold tracking-tight", String(c))}>{inr(Number(v))}</p>
               </div>
             ))}
           </div>
@@ -211,7 +211,7 @@ function Tds() {
               <p className="font-medium">{inr(comp.amount)} TDS on {comp.invoice_id} <span className="text-fg-3">· {comp.customer_name} · section {comp.tds_section ?? "not stated"}</span></p>
               {done ? <p className="mt-2 text-[13px] text-fg-3">Already {TDS_STATUS[comp.tds_status ?? ""]?.toLowerCase()}.</p> : (
                 <div className="mt-5 grid gap-4 md:grid-cols-2">
-                  <Field label="Form 16A (optional)"><input type="file" onChange={(e) => setCert(e.target.files?.[0] ?? null)} className={clsx(inputCls, "pt-2 file:mr-3 file:rounded-full file:border-0 file:bg-white/10 file:px-3 file:py-0.5 file:text-fg")} /></Field>
+                  <Field label="Form 16A (optional)"><input type="file" onChange={(e) => setCert(e.target.files?.[0] ?? null)} className={clsx(inputCls, "pt-2 file:mr-3 file:rounded file:border-0 file:bg-white/10 file:px-3 file:py-0.5 file:text-fg")} /></Field>
                   <Field label="Note"><input value={note} onChange={(e) => setNote(e.target.value)} placeholder="e.g. Matched 26AS entry for Q3" className={inputCls} /></Field>
                   <div className="flex gap-2.5 md:col-span-2">
                     <Button variant="primary" disabled={!reviewer.trim()} loading={verify.isPending} onClick={() => verify.mutate(comp.component_id)}>Mark verified</Button>
@@ -253,10 +253,10 @@ function Invoices() {
 
 function Export() {
   return (
-    <div className="card grain relative flex flex-col items-start gap-6 overflow-hidden p-[clamp(28px,5vw,56px)]">
-      <h3 className="max-w-[18ch] text-[clamp(1.8rem,3.4vw,2.8rem)]">One workbook for month-end.</h3>
+    <div className="card flex flex-col items-start gap-6 overflow-hidden p-[clamp(28px,5vw,56px)]">
+      <h3 className="text-[1.35rem]">One workbook for month-end</h3>
       <p className="max-w-[60ch] text-fg-2">Summary, transactions, invoices, allocations, settlement components, review cases, ageing, customers, TDS register, remittances and the audit log.</p>
-      <button type="button" onClick={() => { downloadReport().catch((e) => toast.error((e as Error).message)); }} className="cursor-pointer inline-flex h-13 items-center gap-2 rounded-full bg-fg px-7 text-[15px] font-medium text-black transition-colors hover:bg-white">
+      <button type="button" onClick={() => { downloadReport().catch((e) => toast.error((e as Error).message)); }} className="cursor-pointer inline-flex h-11 items-center gap-2 rounded-md bg-white px-5 text-[15px] font-semibold text-hero transition-colors hover:bg-fg-2">
         <DownloadSimple weight="bold" className="size-4" /> Download Excel report
       </button>
     </div>
