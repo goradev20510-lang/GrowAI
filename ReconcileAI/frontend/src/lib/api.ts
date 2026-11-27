@@ -53,12 +53,36 @@ export type AuditRow = {
 export class ApiError extends Error {}
 
 let reviewerName = "";
-export const setApiReviewer = (name: string) => { reviewerName = name; };
+// HTTP headers only carry Latin-1.
+export const setApiReviewer = (name: string) => { reviewerName = name.replace(/[^\x20-\x7e\xa0-\xff]/g, "").trim(); };
+
+// Set by the Clerk gate; unused when the app runs without sign-in.
+let tokenProvider: (() => Promise<string | null>) | null = null;
+export const setApiTokenProvider = (p: typeof tokenProvider) => { tokenProvider = p; };
+
+async function authorise(headers: Headers) {
+  const token = await tokenProvider?.();
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+}
+
+export async function downloadReport() {
+  const headers = new Headers();
+  await authorise(headers);
+  const res = await fetch("/api/reports/export.xlsx", { headers, cache: "no-store" });
+  if (!res.ok) throw new ApiError(`Could not download the report (${res.status}).`);
+  const url = URL.createObjectURL(await res.blob());
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = res.headers.get("content-disposition")?.match(/filename="([^"]+)"/)?.[1] ?? "reconciliation.xlsx";
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 10_000);
+}
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers);
   if (reviewerName) headers.set("X-Reviewer", reviewerName);
   if (init.body && !(init.body instanceof FormData)) headers.set("Content-Type", "application/json");
+  await authorise(headers);
   let res: Response;
   try {
     res = await fetch(`/api${path}`, { ...init, headers, cache: "no-store" });

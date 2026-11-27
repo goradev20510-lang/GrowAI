@@ -109,6 +109,8 @@ These are API/CLI features; the two web UIs do not have screens for them yet.
 
 ## Login, audit and backups
 
+- **Website and API: Clerk.** Set `CLERK_PUBLISHABLE_KEY` on the API and `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` on the website (the same public key; no secret key is used). The API verifies each session token. Signed-in users get `CLERK_DEFAULT_ROLE` (default `viewer`; the Render demo sets `admin`), and ids in `CLERK_ADMIN_IDS` are admins. The audit trail records the typed reviewer name with the Clerk user id. The Streamlit app does not use Clerk.
+
 - Login is **on when `APP_ENV=production`** (or `RECONCILE_AUTH=1`). Create the first admin with `RECONCILE_ADMIN_USER` / `RECONCILE_ADMIN_PASSWORD` (10+ characters) or `python -m scripts.create_user NAME --role admin`. Roles: viewer, reviewer, admin. The API uses HTTP Basic, so **serve it over HTTPS only**.
 - Audit entries are hash-chained and database triggers block edits. `GET /api/audit-chain` verifies the chain. Someone with direct file access could rebuild it, so record the returned `head` elsewhere.
 - `python -m scripts.backup_db` makes a consistent copy and checks the chain. Schedule it yourself.
@@ -228,7 +230,9 @@ CI (`.github/workflows/ci.yml`) runs both on every push.
 
 ## Deploying on Render
 
-`render.yaml` deploys the Docker image. Set `OPENROUTER_API_KEY` in the dashboard, or leave it empty for offline mode. Set the admin variables, or nobody can sign in. **The free plan has no persistent disk, so all data, including users and the audit log, is lost on restart.** `render.yaml` shows the disk settings for a paid plan.
+`render.yaml` deploys three services: the Streamlit app, the API (`reconcileai-api`) and the website (`reconcileai-web`). The API and Streamlit app have separate databases. Set the website's `RECONCILE_API_URL` to the API's URL and the API's `RECONCILE_CORS` to the website's URL, then redeploy the website.
+
+For the Streamlit app, `render.yaml` deploys the Docker image. Set `OPENROUTER_API_KEY` in the dashboard, or leave it empty for offline mode. Set the admin variables, or nobody can sign in. **The free plan has no persistent disk, so all data, including users and the audit log, is lost on restart.** `render.yaml` shows the disk settings for a paid plan.
 
 ## License
 

@@ -17,5 +17,64 @@ services:
         value: "1"
       - key: LLM_MATCH_EXPLANATIONS
         value: "0"
+      # Login is on in production. Set both in the dashboard; they create the first admin.
+      - key: RECONCILE_ADMIN_USER
+        sync: false
+      - key: RECONCILE_ADMIN_PASSWORD
+        sync: false
+      # Set to 1 only if you agree to send (masked) document text to the model provider.
+      - key: LLM_DATA_CONSENT
+        value: "0"
     # The free plan has no persistent disk: the SQLite database starts empty on
-    # every deploy/restart. Attach a Render disk and set DATABASE_PATH to keep data.
+    # every deploy/restart. To keep data, move to a paid plan and uncomment:
+    #
+    #   disk:
+    #     name: reconcile-data
+    #     mountPath: /var/data
+    #     sizeGB: 1
+    #
+    # and add the env var DATABASE_PATH=/var/data/reconcile.db
+
+  # API for the React website. Sign-in is verified with Clerk.
+  - type: web
+    name: reconcileai-api
+    runtime: docker
+    plan: free
+    rootDir: ReconcileAI
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /api/health
+    envVars:
+      - key: APP_MODE
+        value: api
+      - key: APP_ENV
+        value: production
+      - key: LLM_PROVIDER
+        value: openrouter
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: LLM_DATA_CONSENT
+        value: "0"
+      - key: CLERK_PUBLISHABLE_KEY
+        sync: false
+      # Synthetic-data demo: everyone who signs in gets this role (viewer | reviewer | admin).
+      - key: CLERK_DEFAULT_ROLE
+        value: admin
+      # The website's public URL, no trailing slash.
+      - key: RECONCILE_CORS
+        sync: false
+
+  # React website. Both values are read at build time: redeploy after changing them.
+  - type: web
+    name: reconcileai-web
+    runtime: node
+    plan: free
+    rootDir: ReconcileAI/frontend
+    buildCommand: npm ci && npm run build
+    startCommand: npm start
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
+        sync: false
+      - key: RECONCILE_API_URL
+        sync: false

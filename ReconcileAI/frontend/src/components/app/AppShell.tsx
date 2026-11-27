@@ -9,7 +9,8 @@ import { motion } from "motion/react";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { MagnifyingGlass, Play, Database, UserCircle } from "@phosphor-icons/react";
-import { api } from "@/lib/api";
+import { api, downloadReport } from "@/lib/api";
+import { AccountButton } from "@/components/app/Auth";
 import { useReviewer } from "@/components/providers";
 import { Logo } from "@/components/Logo";
 import { Button, inputCls } from "@/components/ui";
@@ -90,6 +91,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             className="hidden h-9 shrink-0 cursor-pointer items-center gap-2 rounded-full border border-line-2 px-3 text-[13px] text-fg-3 transition-colors hover:border-line-3 hover:text-fg lg:flex">
             <MagnifyingGlass className="size-4" /> Go to <kbd className="font-mono text-[11px] text-fg-4">⌘K</kbd>
           </button>
+          <AccountButton />
         </div>
         <div className="border-t border-line">
           <div className="shell flex flex-wrap items-center gap-3 py-2.5">
@@ -136,7 +138,7 @@ function CommandBar({ open, setOpen, onReconcile, onDemo }: {
         <Command.Group heading="Actions" className="[&_[cmdk-group-heading]]:px-3 [&_[cmdk-group-heading]]:py-2 [&_[cmdk-group-heading]]:text-[12px] [&_[cmdk-group-heading]]:text-fg-4">
           <Command.Item className={item} onSelect={go(onReconcile)}>Run reconciliation</Command.Item>
           <Command.Item className={item} onSelect={go(onDemo)}>Load demo dataset</Command.Item>
-          <Command.Item className={item} onSelect={go(() => window.open("/api/reports/export.xlsx"))}>Download Excel report</Command.Item>
+          <Command.Item className={item} onSelect={go(() => { downloadReport().catch((e) => toast.error((e as Error).message)); })}>Download Excel report</Command.Item>
         </Command.Group>
       </Command.List>
     </Command.Dialog>

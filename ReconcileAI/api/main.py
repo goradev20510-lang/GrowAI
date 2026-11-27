@@ -19,6 +19,7 @@ from typing import Any
 
 import pandas as pd
 from fastapi import BackgroundTasks, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
+from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
@@ -37,7 +38,7 @@ from database.repositories import (  # noqa: E402
 from decision import adjustments as adj  # noqa: E402
 from decision import review_manager as rm  # noqa: E402
 from database import repositories as repo  # noqa: E402
-from security import auth  # noqa: E402
+from security import auth, clerk  # noqa: E402
 
 @asynccontextmanager
 async def _lifespan(_app):
@@ -61,25 +62,29 @@ def _required_role(method: str, path: str) -> str:
 
 @app.middleware("http")
 async def _guard_requests(request: Request, call_next):
-    """Login (HTTP Basic, so browsers prompt for it) and cross-site request protection."""
+    """Login (Clerk when configured, else HTTP Basic) and cross-site request protection."""
     method, path = request.method, request.url.path
     if method == "OPTIONS" or path == "/api/health":
         return await call_next(request)
     origin = request.headers.get("origin")
     if method not in ("GET", "HEAD") and origin and origin not in ORIGINS:
         return JSONResponse({"detail": "Requests from this origin are not allowed."}, status_code=403)
-    if settings.AUTH_ENABLED:
+    if settings.AUTH_ENABLED or clerk.enabled():
         user = None
         scheme, _, token = request.headers.get("authorization", "").partition(" ")
-        if scheme.lower() == "basic":
+        if clerk.enabled():
+            if scheme.lower() == "bearer":
+                user = await run_in_threadpool(clerk.authenticate, token, ORIGINS)
+        elif scheme.lower() == "basic":
             try:
                 name, _, password = base64.b64decode(token).decode("utf-8").partition(":")
                 user = auth.authenticate(name, password)
             except (binascii.Error, UnicodeDecodeError, ValueError):
                 user = None
         if not user:
+            challenge = "Bearer" if clerk.enabled() else 'Basic realm="ReconcileAI"'
             return JSONResponse({"detail": "Sign in to continue."}, status_code=401,
-                                headers={"WWW-Authenticate": 'Basic realm="ReconcileAI"'})
+                                headers={"WWW-Authenticate": challenge})
         if not auth.has_role(user, _required_role(method, path)):
             return JSONResponse({"detail": "Your role does not allow this."}, status_code=403)
         request.state.user = user["username"]
@@ -113,7 +118,12 @@ def records(df: pd.DataFrame) -> list[dict]:
 
 def _reviewer(request: Request, x_reviewer: str | None) -> str:
     """The signed-in user when login is on; otherwise the name the client sends."""
-    who = getattr(request.state, "user", None) or (x_reviewer or "").strip()
+    user = getattr(request.state, "user", None)
+    name = (x_reviewer or "").strip()
+    if user and clerk.enabled():
+        # The id is verified; the typed name only makes the audit trail readable.
+        return f"{name} [{user}]" if name else user
+    who = user or name
     if not who:
         raise HTTPException(400, "Enter your name as reviewer first. Every decision is recorded against it.")
     return who

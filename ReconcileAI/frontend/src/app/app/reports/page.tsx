@@ -7,7 +7,7 @@ import { motion } from "motion/react";
 import { useState } from "react";
 import { toast } from "sonner";
 import { DownloadSimple } from "@phosphor-icons/react";
-import { api, type Invoice, type TdsRow } from "@/lib/api";
+import { api, downloadReport, type Invoice, type TdsRow } from "@/lib/api";
 import { fmtDate, inr, pct } from "@/lib/format";
 import { AGEING_LABELS, TDS_STATUS, invStatus, txnStatus } from "@/lib/vocab";
 import { useReviewer } from "@/components/providers";
@@ -256,9 +256,9 @@ function Export() {
     <div className="card grain relative flex flex-col items-start gap-6 overflow-hidden p-[clamp(28px,5vw,56px)]">
       <h3 className="max-w-[18ch] text-[clamp(1.8rem,3.4vw,2.8rem)]">One workbook for month-end.</h3>
       <p className="max-w-[60ch] text-fg-2">Summary, transactions, invoices, allocations, settlement components, review cases, ageing, customers, TDS register, remittances and the audit log.</p>
-      <a href="/api/reports/export.xlsx" className="inline-flex h-13 items-center gap-2 rounded-full bg-fg px-7 text-[15px] font-medium text-black transition-colors hover:bg-white">
+      <button type="button" onClick={() => { downloadReport().catch((e) => toast.error((e as Error).message)); }} className="cursor-pointer inline-flex h-13 items-center gap-2 rounded-full bg-fg px-7 text-[15px] font-medium text-black transition-colors hover:bg-white">
         <DownloadSimple weight="bold" className="size-4" /> Download Excel report
-      </a>
+      </button>
     </div>
   );
 }
