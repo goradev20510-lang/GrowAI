@@ -7,14 +7,14 @@ from __future__ import annotations
 import re
 from decimal import Decimal
 
-from config.thresholds import AMOUNT_TOLERANCE_PERCENT
 from database.repositories import get_all_invoices, get_all_customers, get_remittance_by_utr
 from matching.exact_match import find_exact_invoice_match
 from matching.fuzzy_match import match_customer_identity
+from matching.references import find_references
+from config.thresholds import amount_tolerance
 
 
 # ── Narration regex parser (no LLM needed) ───────────────────────────────────
-_INV_PATTERN = re.compile(r"\bINV[\s\-_/#]?\d{3,6}\b", re.IGNORECASE)
 
 # Tokens that are payment-rail / bank boilerplate, never a payer name
 _MODE_TOKENS = {
@@ -39,7 +39,8 @@ def _looks_like_reference(token: str) -> bool:
     return bool(re.fullmatch(r"[A-Z]{4}0[A-Z0-9]{6}", t.upper()))           # IFSC
 
 
-def _extract_from_narration(narration: str) -> tuple[list[str], str | None]:
+def _extract_from_narration(narration: str,
+                            invoices: list[dict] | None = None) -> tuple[list[str], str | None]:
     """
     Deterministically extract invoice references and a payer-name hint
     from a raw bank narration such as:
@@ -53,12 +54,12 @@ def _extract_from_narration(narration: str) -> tuple[list[str], str | None]:
         return [], None
 
     # 1. Invoice references (then blank them out so they can't be taken as a payer)
-    refs = []
-    for m in _INV_PATTERN.finditer(narration):
-        ref = re.sub(r"[\s_/#]", "-", m.group(0).upper())
+    refs: list[str] = []
+    rest = narration
+    for start, end, ref in reversed(find_references(narration, invoices)):
         if ref not in refs:
-            refs.append(ref)
-    rest = _INV_PATTERN.sub(" ", narration)
+            refs.insert(0, ref)
+        rest = rest[:start] + " | " + rest[end:]
 
     # 2. Payer: first segment that is not rail boilerplate, a reference or generic text
     payer_hint: str | None = None
@@ -140,7 +141,10 @@ def generate_candidate_invoices(transaction: dict,
 
     # Always parse the raw narration with regex (fast, no LLM, high precision)
     narration_str = transaction.get("narration", "")
-    narr_refs, narr_payer = _extract_from_narration(narration_str)
+    narr_refs, narr_payer = _extract_from_narration(narration_str, all_invoices)
+    narration_keys: set[str] = set()          # invoices cited by the bank line itself
+    for r in narr_refs:
+        narration_keys |= {i["invoice_id"] for i in find_exact_invoice_match(r, all_invoices)}
     for r in narr_refs:
         if r not in invoice_refs:
             invoice_refs.append(r)
@@ -168,7 +172,8 @@ def generate_candidate_invoices(transaction: dict,
             cid = mc["customer_id"]
             for inv in all_invoices:
                 if inv.get("customer_id") == cid:
-                    if inv["status"] not in ("settled", "overpaid"):
+                    # A settled invoice is only of interest when the payment quotes it.
+                    if inv["status"] not in ("settled", "overpaid") or inv["invoice_id"] in exact_candidates:
                         customer_candidates[inv["invoice_id"]] = inv
                         customer_fuzzy_scores[inv["invoice_id"]] = mc.get("fuzzy_score", 0)
                         customer_match_methods[inv["invoice_id"]] = mc.get("match_method", "name_fuzzy")
@@ -182,13 +187,8 @@ def generate_candidate_invoices(transaction: dict,
     for inv in all_invoices:
         if inv["status"] in ("settled", "overpaid"):
             continue
-        inv_total = Decimal(str(inv["total_amount"]))
         outstanding = Decimal(str(inv["outstanding_amount"]))
-        tol = inv_total * AMOUNT_TOLERANCE_PERCENT
-
-        if abs(effective_payment - inv_total) <= tol:
-            amount_matches.add(inv["invoice_id"])
-        elif abs(effective_payment - outstanding) <= tol:
+        if abs(effective_payment - outstanding) <= amount_tolerance(inv["total_amount"]):
             amount_matches.add(inv["invoice_id"])
 
     # ── Step 5: Merge all candidates ─────────────────────────────────────────
@@ -200,8 +200,11 @@ def generate_candidate_invoices(transaction: dict,
         inv = inv_map.get(inv_id)
         if not inv or inv_id in exclude:
             continue
+        if (inv.get("currency") or "INR").upper() != (transaction.get("currency") or "INR").upper():
+            continue
         signals = {
             "invoice_ref_exact":  inv_id in exact_candidates,
+            "ref_in_narration":   inv_id in narration_keys,
             "customer_match":     inv_id in customer_candidates,
             "amount_match":       inv_id in amount_matches,
             "tds_amount":         tds_amount,
@@ -219,42 +222,3 @@ def generate_candidate_invoices(transaction: dict,
     return candidates
 
 
-def find_amount_candidates(payment_amount: float, tds_amount: float,
-                            all_invoices: list[dict]) -> list[str]:
-    """Return invoice IDs where payment + TDS ≈ invoice total or outstanding."""
-    credit  = Decimal(str(payment_amount))
-    tds_dec = Decimal(str(tds_amount))
-    effective = credit + tds_dec
-    results = []
-    for inv in all_invoices:
-        if inv["status"] in ("settled", "overpaid"):
-            continue
-        inv_total   = Decimal(str(inv["total_amount"]))
-        outstanding = Decimal(str(inv["outstanding_amount"]))
-        tol = inv_total * AMOUNT_TOLERANCE_PERCENT
-        if abs(effective - inv_total) <= tol or abs(effective - outstanding) <= tol:
-            results.append(inv["invoice_id"])
-    return results
-
-
-def detect_multi_invoice_payment(credit_amount: float, tds_amount: float,
-                                  candidate_invoices: list[dict]) -> list[list[dict]]:
-    """
-    Try to identify combinations of invoices that sum to the payment amount.
-    Returns a list of combinations (each combination is a list of invoice dicts).
-    Only checks up to 4-invoice combinations for performance.
-    """
-    from itertools import combinations
-    from decimal import Decimal
-
-    effective = Decimal(str(credit_amount)) + Decimal(str(tds_amount))
-    tol = effective * AMOUNT_TOLERANCE_PERCENT
-    valid_combos = []
-
-    for n in range(2, min(5, len(candidate_invoices) + 1)):
-        for combo in combinations(candidate_invoices, n):
-            combo_total = sum(Decimal(str(inv.get("outstanding_amount", 0))) for inv in combo)
-            if abs(combo_total - effective) <= tol:
-                valid_combos.append(list(combo))
-
-    return valid_combos

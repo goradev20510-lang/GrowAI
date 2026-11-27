@@ -171,7 +171,9 @@ def test_approve_twice_is_refused(reconciled_demo):
         approve_match(case["case_id"], None, "tester")
     from database.repositories import get_invoice
     inv = _allocs(tid, "approved")[0]["invoice_id"]
-    assert get_invoice(inv)["status"] == "overpaid"
+    assert get_invoice(inv)["status"] == "settled"              # the excess is held, not posted
+    from database.repositories import get_open_credit_for_transaction
+    assert get_open_credit_for_transaction(tid)["remaining"] == pytest.approx(10000)
 
 
 def test_tds_verify_and_reject(reconciled_demo):
@@ -349,7 +351,7 @@ def test_implied_tds_detection():
     from validation.financial_rules import infer_tds_deduction
     inv = {"total_amount": 118000, "outstanding_amount": 118000, "taxable_amount": 100000}
     hit = infer_tds_deduction(116000, inv)                   # 2 % of taxable (194C)
-    assert hit and hit["sections"] == ["194C"] and hit["basis"] == "taxable value"
+    assert hit and "194C" in hit["sections"] and hit["basis"] == "taxable value"
     assert infer_tds_deduction(60000, inv) is None            # plain part-payment
 
 

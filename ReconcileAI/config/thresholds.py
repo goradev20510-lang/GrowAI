@@ -3,13 +3,16 @@ ReconcileAI – Decision Thresholds
 All numeric thresholds that drive matching and validation decisions.
 Centralised here so that calibration changes don't scatter across modules.
 """
+import os
 from decimal import Decimal
 
 # ── Confidence scoring ────────────────────────────────────────────────────────
 # Scores are in [0.0, 1.0]
-AUTO_MATCH_THRESHOLD:   float = 0.80   # Score at which a match is auto-approved
-REVIEW_THRESHOLD:       float = 0.50   # Score below which a case goes to human review
-# 0.50–0.80 → suggested match requiring human approval
+# A score alone never auto-approves: decision_engine.auto_block_reason() must also pass
+# (trusted invoice reference, matching payer, amount that fits, confirmed invoice).
+AUTO_MATCH_THRESHOLD:   float = 0.60   # Minimum score for auto-approval
+REVIEW_THRESHOLD:       float = 0.25   # Below this no invoice is suggested (unmatched)
+# At or above it, anything not auto-approved goes to review with a suggestion
 
 # If the top two candidates score within this margin, the case is ambiguous → review
 AMBIGUITY_MARGIN:       float = 0.10
@@ -18,19 +21,50 @@ AMBIGUITY_MARGIN:       float = 0.10
 CUSTOMER_NAME_FUZZY_MIN: int = 75      # Minimum RapidFuzz score (0–100)
 
 # ── Amount tolerance ─────────────────────────────────────────────────────────
-# Allow ±0.5% rounding difference before flagging an amount discrepancy.
+# Allow ±0.5% (capped, see below) rounding difference before flagging a discrepancy.
 # Stored as Decimal for precision.
 AMOUNT_TOLERANCE_PERCENT: Decimal = Decimal("0.005")
+
+# A percentage alone is unbounded (0.5 % of ₹10 lakh is ₹5,000), so it is also capped.
+AMOUNT_TOLERANCE_MAX: Decimal = Decimal(os.getenv("RECONCILE_MAX_ROUNDING", "100"))
+
+
+def amount_tolerance(base) -> Decimal:
+    """Largest difference treated as rounding / bank charges for an amount of size `base`."""
+    return min(Decimal(str(base)) * AMOUNT_TOLERANCE_PERCENT, AMOUNT_TOLERANCE_MAX)
+
 
 # ── TDS rules (India) ─────────────────────────────────────────────────────────
 TDS_SECTION_RATES: dict[str, Decimal] = {
     "194C": Decimal("0.02"),    # Contractors – 2 %
     "194J": Decimal("0.10"),    # Professional services – 10 %
-    "194H": Decimal("0.05"),    # Commission – 5 %
+    "194H": Decimal("0.02"),    # Commission – 2 % (5 % before 1 Oct 2024)
     "194I": Decimal("0.10"),    # Rent – 10 %
     "194A": Decimal("0.10"),    # Interest – 10 %
     "DEFAULT": Decimal("0.10"),
 }
+
+# Every rate allowed per section, by the date it took effect. The table above holds the
+# most common current rate for display. Section labels are those of the Income-tax Act,
+# 1961; have a Chartered Accountant confirm rates and the mapping under the 2025 Act.
+TDS_RATE_HISTORY: dict[str, list[tuple[str, tuple[str, ...]]]] = {
+    "194C": [("1900-01-01", ("0.02", "0.01"))],                  # others 2 %, individual/HUF 1 %
+    "194J": [("1900-01-01", ("0.10", "0.02"))],                  # professional 10 %, technical 2 %
+    "194H": [("1900-01-01", ("0.05",)), ("2024-10-01", ("0.02",))],
+    "194I": [("1900-01-01", ("0.10", "0.02"))],                  # land/building 10 %, machinery 2 %
+    "194A": [("1900-01-01", ("0.10",))],
+    "194Q": [("2021-07-01", ("0.001",))],                        # purchase of goods
+}
+
+
+def tds_rates(section: str, on: str | None = None) -> tuple[Decimal, ...]:
+    """Rates valid for `section` on ISO date `on` (default: latest)."""
+    history = TDS_RATE_HISTORY.get((section or "").upper())
+    if not history:
+        return (TDS_SECTION_RATES["DEFAULT"],)
+    valid = [rates for start, rates in history if not on or start <= str(on)[:10]]
+    return tuple(Decimal(r) for r in (valid[-1] if valid else history[0][1]))
+
 
 # Maximum TDS percentage accepted without escalating to review
 MAX_TDS_RATE: Decimal = Decimal("0.20")
@@ -56,10 +90,11 @@ PARTIAL_THRESHOLD: Decimal = Decimal("0.99")
 
 
 # ── Learned overrides ─────────────────────────────────────────────────────────
+# Opt-in with RECONCILE_USE_LEARNED_PARAMS=1. They are calibrated on synthetic data only,
+# so the hand-set values are used unless someone chooses otherwise.
 # `python -m training.train_matcher` calibrates the scoring weights and decision
 # thresholds on labelled synthetic data and writes them to learned_params.json.
 # The hand-set values above are kept as defaults (and as the training baseline).
-# Set RECONCILE_USE_LEARNED_PARAMS=0 to ignore the learned file.
 import json as _json
 import os as _os
 from pathlib import Path as _Path
@@ -75,7 +110,7 @@ DEFAULT_PARAMS: dict = {
 LEARNED_PARAMS_PATH = _Path(__file__).with_name("learned_params.json")
 LEARNED_PARAMS_ACTIVE: bool = False
 
-if _os.getenv("RECONCILE_USE_LEARNED_PARAMS", "1") != "0" and LEARNED_PARAMS_PATH.exists():
+if _os.getenv("RECONCILE_USE_LEARNED_PARAMS", "0") == "1" and LEARNED_PARAMS_PATH.exists():
     try:
         _learned = _json.loads(LEARNED_PARAMS_PATH.read_text(encoding="utf-8"))["params"]
         if set(_learned["score_weights"]) == set(SCORE_WEIGHTS):

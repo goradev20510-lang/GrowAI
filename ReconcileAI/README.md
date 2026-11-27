@@ -24,6 +24,21 @@ Open http://localhost:8501, use **Load demo dataset**, then **Run reconciliation
 
 Or with Docker: `docker build -t reconcileai . && docker run -p 8501:8501 --env-file .env reconcileai`
 
+### New web frontend (React + FastAPI)
+
+A second UI lives in [`frontend/`](frontend/): Next.js, talking to a thin FastAPI layer ([`api/main.py`](api/main.py)) that calls the same Python functions the Streamlit app uses. No money logic moved.
+
+```bash
+# terminal 1: API on :8000
+cd ReconcileAI && source .venv/bin/activate
+uvicorn api.main:app --port 8000
+
+# terminal 2: web on :3000 (proxies /api to :8000; override with RECONCILE_API_URL)
+cd ReconcileAI/frontend && npm install && npm run dev
+```
+
+Open http://localhost:3000 for the landing page, or http://localhost:3000/app/overview for the workspace. Enter a reviewer name in the bar under the nav, then **Load demo data** and **Run reconciliation**. Shortcuts: ⌘K command bar; on the review queue, J/K move between cases and A approves.
+
 ---
 
 ## The app
@@ -40,7 +55,9 @@ Or with Docker: `docker build -t reconcileai . && docker run -p 8501:8501 --env-
 
 ### UI design
 
-The interface follows the "Invoice & Billing Tool" profile from the UI/UX Pro Max skill (Swiss minimalism with a data-dense dashboard). Navy is the primary colour; green, amber and red are reserved for status and always appear with a text label. Type is IBM Plex Sans and Mono. The default theme is light, with a matching dark theme that follows the OS. The theme lives in [`.streamlit/config.toml`](.streamlit/config.toml); `app.py` has only a few lines of CSS for the hero figure and the value-split bar. Money uses Indian digit grouping (₹1,06,200.00), and timestamps are shown in IST.
+**Web frontend.** The design language is modelled on the Awwwards Honorable Mention "Autonomous Finances" (April 2026): a monochrome black canvas, white-alpha hairlines, an ice-blue signal colour, DM Sans display type over Inter, and chrome 3D rings that turn as you scroll. Only the design language is borrowed; the copy, 3D geometry and assets are original. Built with Three.js / React Three Fiber, GSAP (ScrollTrigger, SplitText), Lenis, Motion and TanStack Query. Tokens and rules are in [`frontend/DESIGN.md`](frontend/DESIGN.md).
+
+**Streamlit app.** The interface follows the "Invoice & Billing Tool" profile from the UI/UX Pro Max skill (Swiss minimalism with a data-dense dashboard). Navy is the primary colour; green, amber and red are reserved for status and always appear with a text label. Type is IBM Plex Sans and Mono. The default theme is light, with a matching dark theme that follows the OS. The theme lives in [`.streamlit/config.toml`](.streamlit/config.toml); `app.py` has only a few lines of CSS for the hero figure and the value-split bar. Money uses Indian digit grouping (₹1,06,200.00), and timestamps are shown in IST.
 
 Text that may come from the model is labelled as such: the management summary, assistant answers, and match explanations. Match explanations are deterministic and evidence-only by default; they come from the model only when `LLM_MATCH_EXPLANATIONS=1`.
 
@@ -49,119 +66,97 @@ Text that may come from the model is labelled as such: the management summary, a
 ## How a bank credit is decided
 
 1. **Excluded?** Debits and zero lines are kept for completeness but never matched.
-2. **Duplicate?** Same UTR as an earlier credit, or (when a UTR is missing) the same amount with a near-identical narration within 30 days. Two different UTRs are never duplicates, so split payments are safe. Flagged copies go to review, where they can be confirmed or released.
-3. **Remittance advice:** found by UTR, or by a unique amount + date match when the email quoted no UTR. It contributes invoice references, the payer, the TDS amount and the TDS section.
-4. **Candidates:** invoice references parsed from the narration (NEFT/RTGS/IMPS/UPI, slash, hyphen and UTR-first layouts) or the remittance; customers matched by GSTIN or fuzzy name; and invoices whose outstanding balance equals payment + TDS. Invoices a reviewer rejected for this credit are excluded.
-5. **Score:** a weighted sum of six signals (see below).
-6. **Decide:**
-   - **Auto-match** when the score clears the auto threshold *and* the amount validates (within ±0.5 %), and the top two candidates aren't within the ambiguity margin. A part-payment with an exact invoice reference may also auto-apply, but never when TDS is involved.
-   - **Bulk payment:** if 2–4 of the customer's (or the referenced) invoices add up to the payment, propose a split across them.
-   - **Review**, with a proposed allocation, for: close candidates, TDS (declared, or inferred from a short payment equal to 2/5/10 % of the taxable value or total), part and over-payments, already-settled invoices, low confidence.
-   - **Unmatched** otherwise, with an open case so a human can allocate or dismiss it.
+2. **Duplicate?** Same UTR as an earlier credit, or (when a UTR is missing) the same amount with a near-identical narration within 30 days. Two different UTRs are never duplicates.
+3. **Remittance advice:** found by UTR, or by a unique amount + date match when the email quoted no UTR. An advice already used by another credit is not used again.
+4. **Candidates:** invoice numbers (any format on your register) read from the narration or advice; customers matched by GSTIN or name; and invoices whose outstanding balance equals payment + TDS. Invoices a reviewer rejected for this credit are excluded.
+5. **Score:** a weighted sum of six signals.
+6. **Auto-match only if all of these hold:**
+   - the score is at least 0.60 and no rival is within 0.10;
+   - the amount equals the balance within 0.5 %, capped at ₹100, with no TDS involved;
+   - the invoice number came from the bank line, or from an advice carrying this UTR whose amount agrees;
+   - the payer matches the invoice's customer;
+   - the invoice is not a model-read one still waiting for confirmation.
+7. Otherwise **review** (part-payments, TDS, bulk, over-payments and anything failing a gate), or **unmatched** below 0.25. Both open a case.
 
-Invoice balances are always recomputed from approved allocations (settled, partially paid, overpaid); they are never edited directly. Re-importing an invoice never resets its balance.
+A model-guessed invoice number can suggest a match but never post one.
+
+## Money and balances
+
+- Outstanding = total − paid before import − approved payments − adjustments − rounding. Rounding is stored on the invoice.
+- Nothing is applied beyond what an invoice owes. The excess is held as **customer credit**, which can be applied to the same customer's invoices.
+- **Credit notes, write-offs and bank charges** are separate reversible entries.
+- Every action checks the current state and runs in one database transaction.
+- `GET /api/ledger/check` verifies that receipts = applied + held + undecided + duplicates + excluded, and that every invoice balance agrees with its entries.
 
 ### TDS (Indian tax deducted at source)
 
-The rate is validated for sections 194C (2 %), 194J/194I/194A (10 %) and 194H (5 %), on either the taxable value or the invoice total (CBDT Circular 23/2017). A TDS claim stays **evidence pending** until a reviewer verifies it against Form 16A / 26AS. A rejected claim re-opens the invoice for the deducted amount.
+Rates are held by section and effective date in [`config/thresholds.py`](config/thresholds.py) (194C 1/2 %, 194J 10/2 %, 194H 5 % then 2 % from 1 Oct 2024, 194I 10/2 %, 194A 10 %, 194Q 0.1 %), on the taxable value or invoice total (CBDT Circular 23/2017). **Have a Chartered Accountant confirm the table, including section numbering under the Income-tax Act, 2025.** A claim stays pending until a reviewer verifies it with a certificate or a note naming the evidence. A rejected claim re-opens the invoice.
 
----
+## Accounting and intake tools
 
-## Matching parameters & training
+| Task | How |
+|---|---|
+| Hold a receipt as an advance / apply credit | `POST /api/review/{case}/hold`, `POST /api/credits/{id}/apply` |
+| Credit note, write-off, bank charge | `POST /api/invoices/{id}/adjustments`, reverse with `/api/adjustments/{id}/reverse` |
+| Confirm a model-read invoice | `POST /api/invoices/{id}/confirm` |
+| Match TDS against a 26AS table | `POST /api/tds/26as` (preview; `apply=true` to verify unambiguous matches) |
+| Draft payment reminders (never sent) | `GET /api/reports/reminders` |
+| Import advices from a mailbox (read-only IMAP) | `python -m scripts.fetch_remittances --days 7` |
+| Tally / Zoho Books registers | Import the CSV/Excel export; common column names are recognised |
+| Extra bank column names | `config/bank_columns.json`, e.g. `{"narration": ["txn particulars"]}` |
 
-| Signal | Default weight | Learned weight |
-|---|---|---|
-| Invoice reference exact | 0.50 | 0.306 |
-| Customer exact (100 % name / GSTIN) | 0.15 | 0.072 |
-| Customer fuzzy (× similarity) | 0.10 | 0.058 |
-| Amount exact (payment + TDS = outstanding) | 0.15 | 0.306 |
-| Amount within ±0.5 % | 0.05 | 0.255 |
-| Date within 7 / 30 / 90 days of due date | 0.05 | 0.003 |
-| **Auto-match threshold** | 0.80 | **0.464** |
-| **Review threshold** | 0.50 | **0.083** |
-| **Ambiguity margin** (top-2 gap) | 0.10 | **0.144** |
-| Customer fuzzy minimum | 75 | 60 |
+These are API/CLI features; the two web UIs do not have screens for them yet.
 
-The learned values live in [`config/learned_params.json`](config/learned_params.json) and are used automatically. Set `RECONCILE_USE_LEARNED_PARAMS=0` to use the hand-set defaults in [`config/thresholds.py`](config/thresholds.py). Under the learned values, an auto-match needs an exact invoice reference **and** a matching amount. A name + amount match alone always goes to a human.
+## Login, audit and backups
+
+- Login is **on when `APP_ENV=production`** (or `RECONCILE_AUTH=1`). Create the first admin with `RECONCILE_ADMIN_USER` / `RECONCILE_ADMIN_PASSWORD` (10+ characters) or `python -m scripts.create_user NAME --role admin`. Roles: viewer, reviewer, admin. The API uses HTTP Basic, so **serve it over HTTPS only**.
+- Audit entries are hash-chained and database triggers block edits. `GET /api/audit-chain` verifies the chain. Someone with direct file access could rebuild it, so record the returned `head` elsewhere.
+- `python -m scripts.backup_db` makes a consistent copy and checks the chain. Schedule it yourself.
+- Before text goes to a model provider, account numbers, PAN, phone numbers and e-mail addresses are masked. Names, amounts and GSTINs are still sent. In production nothing is sent unless `LLM_DATA_CONSENT=1`.
+
+## Optional parameter calibration
+
+The hand-set values are used. `config/learned_params.json` was fitted on synthetic data **before the safety gates above were added**, and is used only with `RECONCILE_USE_LEARNED_PARAMS=1`; retrain before trying it.
 
 ```bash
-python -m data.synthetic.generate_training_data          # ≈11.6k labelled credits, 22 scenarios (~3 s)
-python -m training.train_matcher                         # fit weights + thresholds (~30 s)
-python -m training.train_matcher --dry-run               # evaluate only
+python -m data.synthetic.generate_training_data
+python -m training.train_matcher --dry-run
 ```
-
-The trainer runs the real candidate generator and validation on every transaction. It replays the decision engine's gates in numpy (no DB, no LLM; a test asserts the replay agrees with the engine) and searches for the parameters that minimise a business cost:
-
-| Outcome | Cost |
-|---|---|
-| Money auto-posted to the wrong invoice | 10 |
-| Evidence existed but the credit was left "unmatched" | 4 |
-| Auto-posted something policy says a human must check | 3 |
-| Avoidable manual review | 1 |
-| Review with a wrong suggestion / review of a non-receivable | 0.5 |
-
-Splits are by batch (70/15/15). Results on the held-out test split (see the evaluation section for the per-scenario breakdown):
-
-| | Hand-set defaults | Learned |
-|---|---|---|
-| Mean cost | 0.882 | 0.062 |
-| Outcome correct | 58.8 % | 94.8 % |
-| Auto-matched | 20.7 % | 44.3 % |
-| Wrong auto-matches | 0 | 0 |
-| Evidence-backed credits left unmatched | 264 | 9 |
 
 ---
 
 ## Evaluation: examples tested and where it fails
 
-**All data is synthetic, made up for this prototype.** No real client or bank data is used. Customer names, GSTINs, UTRs, invoices and emails are generated by [`data/synthetic/generate_dataset.py`](data/synthetic/generate_dataset.py) (demo) and [`generate_training_data.py`](data/synthetic/generate_training_data.py) (training/evaluation). GSTIN and UTR formats are realistic, but the numbers are random.
+**All data is synthetic, made up for this prototype.** No real client or bank data is used.
 
-**Jurisdiction:** India. That means INR, GST invoices, NEFT/RTGS/IMPS/UPI narrations, and TDS under sections 194C/J/H/I/A. Another country would need changes to the TDS rate table and certificate workflow (withholding tax rules), the narration parser (SEPA/ACH/BACS reference formats), the tax-ID matcher (VAT numbers instead of GSTIN), and multi-currency support (only INR today).
+**Jurisdiction:** India: INR, GST invoices, NEFT/RTGS/IMPS/UPI narrations and TDS. Another country would need new tax rules, reference formats, tax-ID matching and multi-currency support.
 
-**Model:** `google/gemini-2.5-flash` via OpenRouter, used for reading PDFs, emails and narrations. All decisions are made in Python. The offline test suite and CI run with the LLM switched off, so they test the rule-based path.
+**Model:** `google/gemini-2.5-flash` via OpenRouter for reading PDFs, emails and narrations. All decisions are made in Python. Tests and the figures below run with the model switched off; the model paths have not been re-run live since the safety changes.
 
-### 1. Demo dataset: 30 hand-designed cases (`python -m scripts.smoke_reconcile`)
+### Demo dataset (`python -m scripts.smoke_reconcile`)
 
-| # | Scenario | Expected | Result |
-|---|---|---|---|
-| 1 | Exact invoice reference + exact amount | matched | ✅ matched |
-| 2 | Customer name variant, no invoice reference | review | ✅ review (name-only payments always need a human) |
-| 3 | Payment without invoice number | review | ✅ review |
-| 4 | Partial payment (60 %) | review | ✅ review |
-| 5 | TDS deducted (10 %, 194J, remittance email) | review | ✅ review, TDS ₹ and section captured, *evidence pending* |
-| 6 | One payment for two invoices | review | ✅ review, split proposed across both invoices |
-| 7–8 | Two part-payments of one invoice | review | ✅ review (not mistaken for duplicates) |
-| 9–10 | Same UTR twice | matched + duplicate | ✅ original matched, copy flagged |
-| 11 | Unknown payer | unmatched | ✅ unmatched (dismissable as non-receivable) |
-| 12 | Two invoices with the same amount | review | ✅ review |
-| 13 | Amount short by ₹5,000 | review | ✅ review |
-| 14 | No remittance, generic narration | review | ✅ review |
-| 15 | Wrong invoice number in narration | review | ✅ review |
-| 16 | Overpayment (+₹10,000) | review | ✅ review; approving marks the invoice *overpaid* |
-| 17–30 | Clean payments | matched | ✅ matched |
+30 hand-designed cases (exact reference, name variant, no reference, part-payment, TDS, bulk, split, duplicate UTR, unknown payer, equal amounts, short payment, wrong reference, over-payment, clean payments): **30 / 30**.
 
-**30 / 30**, offline and with the LLM enabled. The generator's scenario 15, re-uploading the same file, is covered by the test suite (`tests/test_pipeline.py`), along with CSV/PDF/.eml ingestion, every review action and the database migration.
+### Generated credits (`python -m scripts.evaluate --batches 150 --seed 2026`)
 
-### 2. Generated test split: 1,714 credits across 22 scenarios, never seen in training
+| Result | Count of 4,524 |
+|---|---|
+| Auto-matched | 1,786 (39.5 %) |
+| Wrong auto-matches | 0 |
+| Sent to review | 2,463; the suggestion included a correct invoice in 2,340 of 2,448 that had one |
+| Unmatched | 275 |
 
-0 wrong auto-matches. 94.8 % of outcomes are what a reviewer would want. When a credit has a true invoice, the top suggestion is that invoice 97.9 % of the time.
+A second seed (7, 4,157 credits) also had no wrong auto-match. The generator was written alongside the engine, so this shows consistency with its assumptions, not real-world accuracy.
 
-**Where it fails, honestly:**
+**Where it falls short**
+- Messy references (`BILL 0012`, a bare `0012`) go to review: 114 of 292.
+- A payment quoting an invoice without naming the payer always goes to review (all 218 such cases). This is the price of requiring the payer to match.
+- Some unknown payers are sent to review when their amount equals an open invoice.
 
-| Scenario | n | What happens | Why |
-|---|---|---|---|
-| Messy reference formats (`INV 0012` works; `0012`, `BILL 0012`, `INV12` don't) | 113 | 62 % auto-matched, **38 % sent to review** instead | The offline regex only trusts `INV` + 3–6 digits. The LLM narration hint recovers some of these when a key is set; this was not measured at scale. |
-| Bulk payment, no remittance advice | 43 | 79 % review, **21 % left unmatched**; the right split was found 53 % of the time | When the bank truncates the payer to one word, no customer clears the fuzzy floor, so there are no candidates to combine. |
-| Unknown payer | 48 | 35 % go to review instead of unmatched | Coincidental fuzzy name hits. Harmless (a human dismisses them), but it adds noise to the queue. |
-| Unknown payer whose amount equals an open invoice | 19 | 100 % review | By design: it could be a third party paying for a customer. |
-| Non-receivable credits (interest, refunds) | 21 | 5 % review | Same cause as unknown payer. |
-
-**Known limits not covered by the data:**
-- Real bank narrations vary more than the generator does.
-- OCR on scanned invoice PDFs has not been tested on real scans.
-- TDS rates are a static table, so a rate change needs a code/config update and there is no 26AS reconciliation.
+**Not tested**
+- Real bank statements, real Tally/Zoho exports, a real mailbox, a real 26AS file, scanned-PDF OCR.
+- A Docker build or a deployment.
 - Only INR is supported.
-- The LLM paths were verified live on a handful of examples only: 3 extraction calls and the 30-case demo.
 
 ---
 
@@ -177,7 +172,13 @@ See [`.env.example`](.env.example). The key settings:
 | `LLM_ENABLED` | `1` | Master switch for all LLM calls |
 | `LLM_NARRATION_HINTS` | `1` | LLM reads narrations that have no invoice reference |
 | `LLM_MATCH_EXPLANATIONS` | `0` | LLM-phrased explanations (default: deterministic, evidence-only) |
-| `DATABASE_PATH` | `database/reconcile.db` | SQLite file. Older databases are migrated in place on start-up. |
+| `LLM_DATA_CONSENT` | `1`, `0` in production | Required before document text is sent to a model |
+| `LLM_MASK_SENSITIVE` | `1` | Mask account numbers, PAN, phone and e-mail |
+| `RECONCILE_MAX_ROUNDING` | `100` | Largest rounding difference in rupees |
+| `RECONCILE_AUTH` | on in production | Require login |
+| `RECONCILE_CORS` | localhost:3000 | Origins allowed to change data |
+| `APP_MODE` | – | Docker: `api` serves FastAPI instead of Streamlit |
+| `DATABASE_PATH` | `database/reconcile.db` | SQLite file. Older databases are migrated in place on start-up (back up first). |
 
 ---
 
@@ -187,7 +188,7 @@ See [`.env.example`](.env.example). The key settings:
 ReconcileAI/
 ├── app.py                         # Streamlit UI
 ├── config/
-│   ├── settings.py                # env-driven settings, LLM switches
+│   ├── settings.py                # env-driven settings, LLM and login switches
 │   ├── thresholds.py              # hand-set defaults + learned-parameter loader
 │   └── learned_params.json        # output of training/train_matcher.py
 ├── database/
@@ -205,11 +206,13 @@ ReconcileAI/
 ├── validation/                    # payment & TDS rules, duplicates, settlement ledger
 ├── decision/
 │   ├── decision_engine.py         # evaluate_transaction() / reconcile_transaction() / batch
-│   └── review_manager.py          # approve, reject, correct, reverse, dismiss, duplicates, TDS
+│   ├── review_manager.py          # approve, reject, correct, reverse, dismiss, duplicates, TDS
+│   └── adjustments.py · credits.py  # credit notes, write-offs, advances
 ├── reporting/                     # aging, customer balances, TDS register, Excel, finance assistant
+├── security/ · utils/             # login and roles; date parsing
 ├── training/train_matcher.py      # parameter calibration
 ├── data/synthetic/                # demo dataset + labelled training-data generator
-├── scripts/                       # smoke_reconcile.py (demo vs ground truth), check_llm.py
+├── scripts/                       # smoke, evaluate, users, backup, mailbox, LLM check
 └── tests/                         # pytest suite (offline, throw-away databases)
 ```
 
@@ -225,7 +228,7 @@ CI (`.github/workflows/ci.yml`) runs both on every push.
 
 ## Deploying on Render
 
-`render.yaml` deploys the Docker image. Set `OPENROUTER_API_KEY` in the dashboard, or leave it empty for offline mode. The free plan has no persistent disk, so the database starts empty after each deploy. Attach a disk and point `DATABASE_PATH` at it to keep data.
+`render.yaml` deploys the Docker image. Set `OPENROUTER_API_KEY` in the dashboard, or leave it empty for offline mode. Set the admin variables, or nobody can sign in. **The free plan has no persistent disk, so all data, including users and the audit log, is lost on restart.** `render.yaml` shows the disk settings for a paid plan.
 
 ## License
 

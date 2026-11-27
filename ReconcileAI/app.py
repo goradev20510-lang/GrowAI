@@ -33,7 +33,9 @@ from database.repositories import (
     get_allocations_for_transaction, get_all_documents, get_transaction, get_invoice,
     get_settlement_components, get_remittance_by_utr, get_tds_components,
 )
+from config import settings
 from config.settings import ALLOWED_EXTENSIONS
+from security import auth
 from config.thresholds import TDS_SECTION_RATES
 
 st.set_page_config(
@@ -103,6 +105,9 @@ EXCEPTIONS = {
     "unknown_customer":            "Unknown payer",
     "possible_duplicate":          "Possible duplicate",
     "amount_discrepancy":          "Amount differs",
+    "payer_mismatch": "Payer does not match",
+    "unverified_evidence": "Evidence needs checking",
+    "processing_error": "Processing failed",
 }
 # Status palette from the dataviz reference (fixed across light/dark, always shown with a label)
 SPLIT_COLOURS = {"matched": "#0CA30C", "review": "#FAB219", "unmatched": "#D03B3B", "duplicate": "#8A8F98"}
@@ -272,6 +277,9 @@ def run_batch() -> None:
 
 def load_demo() -> None:
     from extraction.ingestion import load_synthetic_dataset
+    if signed_in and signed_in["role"] != "admin":
+        st.error("Only an admin can load the demo dataset.")
+        return
     try:
         with st.spinner("Loading synthetic dataset…"):
             result = load_synthetic_dataset()
@@ -763,6 +771,9 @@ def page_import() -> None:
 
     page_header("Import", "Bring in the three sources reconciliation needs. Re-uploading the same file is "
                           "detected and skipped.")
+    if not can_decide:
+        st.info("Your role can view data but not import it.", icon=":material/lock:")
+        return
     bank_tab, inv_tab, mail_tab = st.tabs(["Bank statement", "Invoices", "Remittance advice"])
 
     with bank_tab:
@@ -773,6 +784,11 @@ def page_import() -> None:
             with st.spinner("Parsing statement…"):
                 res = ingest_bank_statement(up.name, up.getvalue(), bank_name=bank)
             _import_result(res, f"Imported {res.get('transactions_imported', 0)} credit lines from {up.name}.")
+            skipped = res.get("rejected_rows") or []
+            if skipped:
+                st.warning(f"{len(skipped)} row(s) were not imported. Check them against the statement.",
+                           icon=":material/warning:")
+                st.dataframe(pd.DataFrame(skipped), hide_index=True)
 
     with inv_tab:
         st.caption("PDF, CSV or Excel register. Spreadsheets are parsed directly; PDF text is structured (by the model "
@@ -1140,6 +1156,31 @@ PAGES = {
     "assistant":    st.Page(page_assistant,    title="Ask the data", icon=":material/forum:",           url_path="ask"),
 }
 page = st.navigation(list(PAGES.values()), position="hidden")
+
+
+def require_login() -> dict | None:
+    """When login is on, stop here until the visitor signs in."""
+    if not settings.AUTH_ENABLED:
+        return None
+    auth.bootstrap_admin()
+    user = st.session_state.get("_user")
+    if user:
+        return user
+    with st.form("login"):
+        st.markdown("**Sign in to ReconcileAI**")
+        name = st.text_input("Username")
+        password = st.text_input("Password", type="password")
+        if st.form_submit_button("Sign in", type="primary"):
+            user = auth.authenticate(name.strip(), password)
+            if user:
+                st.session_state["_user"] = user
+                st.rerun()
+            st.error("Wrong username or password, or too many attempts. Try again in a few minutes.")
+    st.stop()
+
+
+signed_in = require_login()
+can_decide = signed_in is None or auth.has_role(signed_in, "reviewer")
 show_flash()
 
 with st.sidebar:
@@ -1158,13 +1199,22 @@ with st.sidebar:
     st.page_link(PAGES["assistant"])
 
     st.divider()
-    st.text_input("Reviewer", key="reviewer", placeholder="Your name",
-                  help="Recorded against every approval, rejection and reassignment.")
+    if signed_in:
+        st.session_state["reviewer"] = signed_in["username"] if can_decide else ""
+        st.caption(f"Signed in as {signed_in['username']} ({signed_in['role']})")
+        if st.button("Sign out", width="stretch"):
+            st.session_state.clear()
+            st.rerun()
+    else:
+        st.text_input("Reviewer", key="reviewer", placeholder="Your name",
+                      help="Recorded against every approval, rejection and reassignment.")
     if st.button("Run reconciliation", type="primary", icon=":material/play_arrow:", width="stretch",
-                 help="Match every unmatched credit. Uncertain ones go to the review queue."):
+                 disabled=not can_decide,
+                 help="Match every undecided credit. Uncertain ones go to the review queue."):
         run_batch()
-    if st.button("Load demo dataset", icon=":material/dataset:", width="stretch",
-                 help="Synthetic invoices, bank credits and payment emails. No real client data."):
+    if (signed_in is None or signed_in["role"] == "admin") and st.button(
+            "Load demo dataset", icon=":material/dataset:", width="stretch",
+            help="Synthetic invoices, bank credits and payment emails. No real client data."):
         load_demo()
     st.caption(f"{sidebar_summary['total_transactions']} credits · {sidebar_summary['invoices_total']} invoices")
 

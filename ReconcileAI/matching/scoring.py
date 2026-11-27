@@ -6,7 +6,8 @@ All scoring logic is deterministic Python.
 from __future__ import annotations
 from decimal import Decimal
 
-from config.thresholds import SCORE_WEIGHTS, AMOUNT_TOLERANCE_PERCENT
+from config.thresholds import SCORE_WEIGHTS, amount_tolerance
+from utils.dates import parse_date
 
 
 def score_candidates(transaction: dict, candidates: list[dict]) -> list[dict]:
@@ -53,7 +54,7 @@ def _score_candidate(transaction: dict, invoice: dict, signals: dict) -> float:
     effective  = credit + tds_amount
     inv_total  = Decimal(str(invoice.get("total_amount", 0)))
     outstanding = Decimal(str(invoice.get("outstanding_amount", 0)))
-    tol        = inv_total * AMOUNT_TOLERANCE_PERCENT
+    tol        = amount_tolerance(inv_total)
 
     if abs(effective - inv_total) <= tol or abs(effective - outstanding) <= tol:
         if abs(effective - inv_total) == 0 or abs(effective - outstanding) == 0:
@@ -76,9 +77,7 @@ def _date_proximity_score(txn_date: str | None, due_date: str | None, weight: fl
     if not txn_date or not due_date:
         return 0.0
     try:
-        from dateutil import parser as dp
-        t = dp.parse(txn_date).date()
-        d = dp.parse(due_date).date()
+        t, d = parse_date(txn_date), parse_date(due_date)
         diff = abs((t - d).days)
         if diff <= 7:
             return weight

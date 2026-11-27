@@ -3,12 +3,13 @@ ReconcileAI – Repository Layer
 All database read/write operations. No SQL lives outside this file.
 """
 from __future__ import annotations
+import hashlib
 import json
 import uuid
 from datetime import datetime, timezone, timedelta
 from typing import Any
 
-from database.db import get_connection
+from database.db import get_connection, commit, transaction
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -53,14 +54,14 @@ def upsert_customer(name: str, gstin: str | None = None, pan: str | None = None,
         if updates:
             conn.execute(f"UPDATE customers SET {', '.join(updates)} WHERE customer_id=?",
                          (*params, row["customer_id"]))
-            conn.commit()
+            commit()
         return row["customer_id"]
     cid = _new_id("CUST")
     conn.execute(
         "INSERT INTO customers(customer_id,name,name_variants,gstin,pan,email,created_at) VALUES(?,?,?,?,?,?,?)",
         (cid, name, json.dumps(variants or []), gstin, pan, email, _now())
     )
-    conn.commit()
+    commit()
     return cid
 
 
@@ -90,22 +91,37 @@ def insert_invoice(data: dict) -> str:
     conn = get_connection()
     iid = data.get("invoice_id") or _new_id("INV")
     total = data.get("total_amount", 0) or 0
+    given = data.get("outstanding_amount")
+    opening = round(max(0.0, float(total) - float(given)), 2) if given is not None else 0.0
     conn.execute(
         """INSERT INTO invoices
            (invoice_id,customer_id,supplier_name,customer_name,customer_gstin,
             invoice_date,due_date,taxable_amount,gst_amount,total_amount,
-            outstanding_amount,currency,status,source_document_id,created_at)
-           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            outstanding_amount,currency,status,source_document_id,created_at,
+            invoice_number,opening_paid,verified)
+           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
            ON CONFLICT(invoice_id) DO NOTHING""",
         (iid, data.get("customer_id"), data.get("supplier_name"), data.get("customer_name"),
          data.get("customer_gstin"), data.get("invoice_date"), data.get("due_date"),
          data.get("taxable_amount", 0) or 0, data.get("gst_amount", 0) or 0, total,
          data.get("outstanding_amount", total) if data.get("outstanding_amount") is not None else total,
          data.get("currency", "INR") or "INR", data.get("status", "open") or "open",
-         data.get("source_document_id"), _now())
+         data.get("source_document_id"), _now(),
+         data.get("invoice_number") or iid, opening, 1 if data.get("verified", True) else 0)
     )
-    conn.commit()
+    commit()
     return iid
+
+
+def find_invoices_by_number(number: str) -> list[dict]:
+    conn = get_connection()
+    return _rows(conn.execute("SELECT * FROM invoices WHERE UPPER(COALESCE(invoice_number, invoice_id))=UPPER(?)",
+                              (number,)).fetchall())
+
+
+def mark_invoice_verified(invoice_id: str) -> None:
+    get_connection().execute("UPDATE invoices SET verified=1 WHERE invoice_id=?", (invoice_id,))
+    commit()
 
 
 def get_invoice(invoice_id: str) -> dict:
@@ -140,13 +156,14 @@ def get_partially_paid_invoices(customer_id: str | None = None) -> list[dict]:
     return _rows(rows)
 
 
-def update_invoice_outstanding(invoice_id: str, new_outstanding: float, new_status: str) -> None:
+def update_invoice_outstanding(invoice_id: str, new_outstanding: float, new_status: str,
+                               rounding_writeoff: float = 0.0) -> None:
     conn = get_connection()
     conn.execute(
-        "UPDATE invoices SET outstanding_amount=?, status=? WHERE invoice_id=?",
-        (round(float(new_outstanding), 2), new_status, invoice_id)
+        "UPDATE invoices SET outstanding_amount=?, status=?, rounding_writeoff=? WHERE invoice_id=?",
+        (round(float(new_outstanding), 2), new_status, round(float(rounding_writeoff), 2), invoice_id)
     )
-    conn.commit()
+    commit()
 
 
 # ── Bank Transaction Repository ───────────────────────────────────────────────
@@ -177,7 +194,7 @@ def insert_transaction(data: dict) -> str:
          data.get("currency", "INR"), status,
          data.get("batch_id"), data.get("source_document_id"), _now())
     )
-    conn.commit()
+    commit()
     return tid
 
 
@@ -198,24 +215,18 @@ def get_all_transactions(status: str | None = None) -> list[dict]:
     return _rows(rows)
 
 
-def get_transactions_imported_before(transaction_id: str) -> list[dict]:
-    """Transactions stored before this one (import order). Used for duplicate checks."""
+def get_possible_duplicates(transaction_id: str, utr: str | None, amount: float) -> list[dict]:
+    """Earlier credits sharing the UTR or the amount — the only rows duplicate rules can match."""
     conn = get_connection()
-    row = conn.execute("SELECT rowid FROM bank_transactions WHERE transaction_id=?",
-                       (transaction_id,)).fetchone()
+    row = conn.execute("SELECT rowid FROM bank_transactions WHERE transaction_id=?", (transaction_id,)).fetchone()
     if not row:
         return get_all_transactions()
     return _rows(conn.execute(
-        "SELECT * FROM bank_transactions WHERE rowid < ? AND status != 'excluded' ORDER BY rowid",
-        (row[0],)).fetchall())
-
-
-def get_unmatched_transactions() -> list[dict]:
-    conn = get_connection()
-    rows = conn.execute(
-        "SELECT * FROM bank_transactions WHERE status='unmatched' AND credit_amount > 0 ORDER BY rowid"
-    ).fetchall()
-    return _rows(rows)
+        """SELECT * FROM bank_transactions
+           WHERE rowid < ? AND status != 'excluded'
+             AND ((? != '' AND UPPER(TRIM(COALESCE(utr,''))) = ?) OR ABS(credit_amount - ?) < 0.005)
+           ORDER BY rowid""",
+        (row[0], (utr or "").strip().upper(), (utr or "").strip().upper(), float(amount or 0))).fetchall())
 
 
 def update_transaction_status(transaction_id: str, status: str) -> None:
@@ -223,7 +234,7 @@ def update_transaction_status(transaction_id: str, status: str) -> None:
     conn.execute(
         "UPDATE bank_transactions SET status=? WHERE transaction_id=?", (status, transaction_id)
     )
-    conn.commit()
+    commit()
 
 
 # ── Document Repository ───────────────────────────────────────────────────────
@@ -245,8 +256,15 @@ def insert_document(data: dict) -> str:
         (did, data["filename"], data.get("document_type"), data["file_hash"],
          data.get("file_path"), _now(), data.get("batch_id"))
     )
-    conn.commit()
+    commit()
     return did
+
+
+def delete_document(document_id: str) -> None:
+    """Forget a file that produced nothing, so a corrected retry is not refused as already uploaded."""
+    with transaction() as conn:
+        conn.execute("DELETE FROM extractions WHERE document_id=?", (document_id,))
+        conn.execute("DELETE FROM documents WHERE document_id=?", (document_id,))
 
 
 def get_all_documents() -> list[dict]:
@@ -267,7 +285,7 @@ def insert_extraction(data: dict) -> str:
          data.get("validated_output"), data.get("extraction_status", "complete"),
          json.dumps(data.get("missing_fields", [])), _now())
     )
-    conn.commit()
+    commit()
     return eid
 
 
@@ -293,7 +311,7 @@ def insert_remittance(data: dict) -> str:
          data.get("utr"), data.get("payment_date"), data.get("currency") or "INR",
          json.dumps(data.get("evidence") or []), _now())
     )
-    conn.commit()
+    commit()
     return rid
 
 
@@ -301,13 +319,13 @@ def get_remittance_by_utr(utr: str) -> dict | None:
     if not utr:
         return None
     conn = get_connection()
-    row = conn.execute("SELECT * FROM remittance_records WHERE utr=? ORDER BY rowid DESC LIMIT 1",
-                       (utr,)).fetchone()
+    row = conn.execute("SELECT * FROM remittance_records WHERE UPPER(utr)=UPPER(?) ORDER BY rowid DESC LIMIT 1",
+                       (utr.strip(),)).fetchone()
     return _row_to_dict(row) if row else None
 
 
 def find_remittances_by_amount(amount: float, around_date: str | None = None,
-                               window_days: int = 10) -> list[dict]:
+                               window_days: int = 10, for_transaction: str | None = None) -> list[dict]:
     """
     Remittances *without* a UTR whose stated payment amount equals `amount`.
     Used to link remittance emails that never quoted the bank reference.
@@ -315,8 +333,12 @@ def find_remittances_by_amount(amount: float, around_date: str | None = None,
     conn = get_connection()
     rows = _rows(conn.execute(
         """SELECT * FROM remittance_records
-           WHERE (utr IS NULL OR utr = '') AND ABS(COALESCE(payment_amount,0) - ?) < 0.01""",
-        (float(amount),)).fetchall())
+           WHERE (utr IS NULL OR utr = '') AND ABS(COALESCE(payment_amount,0) - ?) < 0.01
+             AND remittance_id NOT IN (
+                 SELECT remittance_id FROM payment_allocations
+                 WHERE remittance_id IS NOT NULL AND allocation_status IN ('proposed','approved')
+                   AND transaction_id != ?)""",
+        (float(amount), for_transaction or "")).fetchall())
     if not around_date:
         return rows
     try:
@@ -350,14 +372,15 @@ def insert_allocation(data: dict) -> str:
     conn.execute(
         """INSERT INTO payment_allocations
            (allocation_id,transaction_id,invoice_id,allocated_amount,allocation_status,
-            confidence_score,decision_reason,approved_by,approved_at,created_at)
-           VALUES(?,?,?,?,?,?,?,?,?,?)""",
+            confidence_score,decision_reason,approved_by,approved_at,created_at,remittance_id,from_credit_id)
+           VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
         (aid, data["transaction_id"], data["invoice_id"], round(float(data["allocated_amount"]), 2),
          data.get("allocation_status", "proposed"), data.get("confidence_score"),
          data.get("decision_reason"), data.get("approved_by"),
-         _now() if data.get("allocation_status") == "approved" else None, _now())
+         _now() if data.get("allocation_status") == "approved" else None, _now(),
+         data.get("remittance_id"), data.get("from_credit_id"))
     )
-    conn.commit()
+    commit()
     return aid
 
 
@@ -403,6 +426,12 @@ def get_rejected_invoice_ids(transaction_id: str) -> set[str]:
     return {r["invoice_id"] for r in rows}
 
 
+def update_decision_reason(allocation_id: str, reason: str) -> None:
+    get_connection().execute("UPDATE payment_allocations SET decision_reason=? WHERE allocation_id=?",
+                             (reason, allocation_id))
+    commit()
+
+
 def update_allocation_status(allocation_id: str, status: str, reviewer: str = "system",
                              notes: str | None = None) -> None:
     conn = get_connection()
@@ -412,7 +441,7 @@ def update_allocation_status(allocation_id: str, status: str, reviewer: str = "s
            WHERE allocation_id=?""",
         (status, reviewer, _now(), allocation_id)
     )
-    conn.commit()
+    commit()
 
 
 # ── Settlement Components ─────────────────────────────────────────────────────
@@ -429,7 +458,7 @@ def insert_settlement_component(data: dict) -> str:
          data.get("tds_section"), data.get("tds_status"), data.get("supporting_doc"),
          data.get("notes"), _now())
     )
-    conn.commit()
+    commit()
     return cid
 
 
@@ -463,7 +492,7 @@ def update_settlement_component(component_id: str, **fields: Any) -> None:
     conn = get_connection()
     conn.execute(f"UPDATE settlement_components SET {', '.join(f'{k}=?' for k in sets)} WHERE component_id=?",
                  (*sets.values(), component_id))
-    conn.commit()
+    commit()
 
 
 def get_all_settlement_components() -> list[dict]:
@@ -485,7 +514,7 @@ def insert_review_case(data: dict) -> str:
          data["exception_type"], data.get("exception_summary"),
          data.get("suggested_action"), "open", _now())
     )
-    conn.commit()
+    commit()
     return cid
 
 
@@ -523,22 +552,50 @@ def update_review_case(case_id: str, status: str, reviewer: str, notes: str) -> 
            WHERE case_id=?""",
         (status, reviewer, _now(), notes, case_id)
     )
-    conn.commit()
+    commit()
 
 
 # ── Audit Logs ────────────────────────────────────────────────────────────────
 
+def _audit_hash(prev: str, *fields: str) -> str:
+    return hashlib.sha256(json.dumps([prev, *fields]).encode("utf-8")).hexdigest()
+
+
 def create_audit_log(entity_type: str, entity_id: str, action: str,
                      actor: str = "system", details: dict | None = None) -> str:
-    conn = get_connection()
     lid = _new_id("LOG")
-    conn.execute(
-        """INSERT INTO audit_logs(log_id,entity_type,entity_id,action,actor,details,created_at)
-           VALUES(?,?,?,?,?,?,?)""",
-        (lid, entity_type, entity_id, action, actor, json.dumps(details or {}, default=str), _now())
-    )
-    conn.commit()
+    payload, now = json.dumps(details or {}, default=str), _now()
+    with transaction() as conn:
+        last = conn.execute("SELECT entry_hash FROM audit_logs ORDER BY rowid DESC LIMIT 1").fetchone()
+        prev = (last["entry_hash"] if last else None) or ""
+        digest = _audit_hash(prev, lid, entity_type, entity_id, action, actor, payload, now)
+        conn.execute(
+            """INSERT INTO audit_logs(log_id,entity_type,entity_id,action,actor,details,created_at,prev_hash,entry_hash)
+               VALUES(?,?,?,?,?,?,?,?,?)""",
+            (lid, entity_type, entity_id, action, actor, payload, now, prev, digest))
     return lid
+
+
+def verify_audit_chain() -> dict:
+    """
+    Re-compute the hash chain. Entries written before the chain existed are counted as
+    unprotected. Removal of the newest entries cannot be detected from the table alone:
+    record `head` somewhere else to cover that.
+    """
+    rows = _rows(get_connection().execute("SELECT * FROM audit_logs ORDER BY rowid").fetchall())
+    prev, started, unprotected = "", False, 0
+    for r in rows:
+        if not r.get("entry_hash"):
+            if started:
+                return {"ok": False, "broken_at": r["log_id"], "reason": "entry without a hash inside the chain"}
+            unprotected += 1
+            continue
+        expected = _audit_hash(prev, r["log_id"], r["entity_type"], r["entity_id"], r["action"], r["actor"],
+                               r["details"], r["created_at"])
+        if r["prev_hash"] != prev or r["entry_hash"] != expected:
+            return {"ok": False, "broken_at": r["log_id"], "reason": "entry changed, inserted or removed"}
+        prev, started = r["entry_hash"], True
+    return {"ok": True, "entries": len(rows), "unprotected": unprotected, "head": prev}
 
 
 def get_audit_logs(entity_id: str | None = None, limit: int = 200,
@@ -569,6 +626,17 @@ def get_audit_actions() -> list[str]:
 
 # ── Reconciliation Batch ──────────────────────────────────────────────────────
 
+def get_batch(batch_id: str) -> dict:
+    return _row_to_dict(get_connection().execute(
+        "SELECT * FROM reconciliation_batches WHERE batch_id=?", (batch_id,)).fetchone())
+
+
+def set_batch_status(batch_id: str, status: str) -> None:
+    get_connection().execute("UPDATE reconciliation_batches SET status=?, completed_at=? WHERE batch_id=?",
+                             (status, _now(), batch_id))
+    commit()
+
+
 def create_batch() -> str:
     conn = get_connection()
     bid = _new_id("BATCH")
@@ -576,7 +644,7 @@ def create_batch() -> str:
         "INSERT INTO reconciliation_batches(batch_id,started_at,status) VALUES(?,?,?)",
         (bid, _now(), "running")
     )
-    conn.commit()
+    commit()
     return bid
 
 
@@ -590,7 +658,7 @@ def update_batch(batch_id: str, stats: dict) -> None:
          stats.get("needs_review", 0), stats.get("unmatched", 0),
          "completed", batch_id)
     )
-    conn.commit()
+    commit()
 
 
 def get_all_batches() -> list[dict]:
@@ -623,7 +691,11 @@ def get_reconciliation_summary() -> dict:
         "tds_pending":        round(q("""SELECT COALESCE(SUM(sc.amount),0) FROM settlement_components sc
                                          JOIN payment_allocations pa ON pa.allocation_id = sc.allocation_id
                                          WHERE sc.component_type='tds' AND pa.allocation_status='approved'
-                                           AND COALESCE(sc.tds_status,'') != 'verified'"""), 2),
+                                           AND COALESCE(sc.tds_status,'') NOT IN ('verified','rejected')"""), 2),
+        "unapplied_credit":   round(q("""SELECT COALESCE(SUM(c.amount),0) - COALESCE((
+                                             SELECT SUM(pa.allocated_amount) FROM payment_allocations pa
+                                             WHERE pa.from_credit_id IS NOT NULL AND pa.allocation_status='approved'),0)
+                                         FROM customer_credits c WHERE c.status='open'"""), 2),
     }
 
 
@@ -631,10 +703,86 @@ def update_allocation_amount(allocation_id: str, new_amount: float) -> None:
     conn = get_connection()
     conn.execute("UPDATE payment_allocations SET allocated_amount=? WHERE allocation_id=?",
                  (round(float(new_amount), 2), allocation_id))
-    conn.commit()
+    commit()
 
 
 def get_settlement_component(component_id: str) -> dict:
     conn = get_connection()
     return _row_to_dict(conn.execute("SELECT * FROM settlement_components WHERE component_id=?",
                                      (component_id,)).fetchone())
+
+
+# ── Customer credits ──────────────────────────────────────────────────────────
+
+_CREDIT_SQL = """
+    SELECT c.*, cu.name AS customer_name,
+           ROUND(c.amount - COALESCE((SELECT SUM(pa.allocated_amount) FROM payment_allocations pa
+                 WHERE pa.from_credit_id = c.credit_id AND pa.allocation_status='approved'), 0), 2) AS remaining
+    FROM customer_credits c LEFT JOIN customers cu ON cu.customer_id = c.customer_id
+"""
+
+
+def get_credits(open_only: bool = True) -> list[dict]:
+    sql = _CREDIT_SQL + (" WHERE c.status='open'" if open_only else "") + " ORDER BY c.rowid"
+    return _rows(get_connection().execute(sql).fetchall())
+
+
+def get_credit(credit_id: str) -> dict:
+    return _row_to_dict(get_connection().execute(_CREDIT_SQL + " WHERE c.credit_id=?", (credit_id,)).fetchone())
+
+
+def get_open_credit_for_transaction(transaction_id: str) -> dict:
+    return _row_to_dict(get_connection().execute(
+        _CREDIT_SQL + " WHERE c.transaction_id=? AND c.status='open'", (transaction_id,)).fetchone())
+
+
+def insert_credit(transaction_id: str, customer_id: str | None, amount: float, created_by: str) -> str:
+    cid = _new_id("CRED")
+    get_connection().execute(
+        """INSERT INTO customer_credits(credit_id,transaction_id,customer_id,amount,status,created_by,created_at)
+           VALUES(?,?,?,?,'open',?,?)""", (cid, transaction_id, customer_id, round(float(amount), 2), created_by, _now()))
+    commit()
+    return cid
+
+
+def update_credit(credit_id: str, amount: float | None = None, status: str | None = None) -> None:
+    conn = get_connection()
+    if amount is not None:
+        conn.execute("UPDATE customer_credits SET amount=? WHERE credit_id=?", (round(float(amount), 2), credit_id))
+    if status is not None:
+        conn.execute("UPDATE customer_credits SET status=? WHERE credit_id=?", (status, credit_id))
+    commit()
+
+
+# ── Invoice adjustments ───────────────────────────────────────────────────────
+
+def get_adjustments(invoice_id: str | None = None, active_only: bool = True) -> list[dict]:
+    where, params = [], []
+    if invoice_id:
+        where.append("invoice_id=?"); params.append(invoice_id)
+    if active_only:
+        where.append("status='active'")
+    sql = "SELECT * FROM invoice_adjustments" + (" WHERE " + " AND ".join(where) if where else "")
+    return _rows(get_connection().execute(sql + " ORDER BY rowid", params).fetchall())
+
+
+def get_adjustment(adjustment_id: str) -> dict:
+    return _row_to_dict(get_connection().execute(
+        "SELECT * FROM invoice_adjustments WHERE adjustment_id=?", (adjustment_id,)).fetchone())
+
+
+def insert_adjustment(invoice_id: str, kind: str, amount: float, reference: str | None,
+                      notes: str, created_by: str) -> str:
+    aid = _new_id("ADJ")
+    get_connection().execute(
+        """INSERT INTO invoice_adjustments(adjustment_id,invoice_id,kind,amount,reference,notes,status,created_by,created_at)
+           VALUES(?,?,?,?,?,?,'active',?,?)""",
+        (aid, invoice_id, kind, round(float(amount), 2), reference, notes, created_by, _now()))
+    commit()
+    return aid
+
+
+def set_adjustment_status(adjustment_id: str, status: str) -> None:
+    get_connection().execute("UPDATE invoice_adjustments SET status=? WHERE adjustment_id=?",
+                             (status, adjustment_id))
+    commit()

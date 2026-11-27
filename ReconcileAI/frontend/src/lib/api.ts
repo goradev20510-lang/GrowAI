@@ -1,0 +1,115 @@
+// Typed client for the FastAPI layer (api/main.py). Every figure on screen comes from here.
+
+export type Summary = {
+  total_transactions: number; matched: number; needs_review: number; unmatched: number; duplicates: number;
+  excluded: number; invoices_total: number; invoices_open: number; invoices_partial: number;
+  invoices_settled: number; invoices_overpaid: number; open_review_cases: number; amount_received: number;
+  amount_matched: number; amount_in_review: number; amount_unmatched: number; amount_duplicate: number;
+  invoice_value: number; outstanding_value: number; tds_pending: number; review_queue: number;
+};
+
+export type Txn = {
+  transaction_id: string; transaction_date: string | null; narration: string | null; utr: string | null;
+  credit_amount: number; status: string; bank_name: string | null; account_number: string | null;
+};
+
+export type Invoice = {
+  invoice_id: string; customer_name: string | null; invoice_date: string | null; due_date: string | null;
+  total_amount: number; taxable_amount: number | null; outstanding_amount: number; status: string;
+};
+
+export type Allocation = {
+  allocation_id: string; invoice_id: string; bank_credit: number; tds: number; tds_section: string | null;
+  applied: number; score: number; status: string; decided_by: string | null; decision_reason: string | null;
+};
+
+export type Case = {
+  case_id: string; transaction_id: string; invoice_id: string | null; exception_type: string;
+  exception_summary: string | null; suggested_action: string | null; status: string; created_at: string | null;
+  reviewed_at?: string | null; reviewer?: string | null; resolution_notes?: string | null;
+  amount?: number; stale?: string[];
+};
+
+export type Remittance = {
+  customer_name: string | null; invoice_references: string[]; payment_amount: number | null;
+  tds_amount: number | null; tds_section: string | null; payment_date: string | null; utr: string | null;
+  evidence_text: string[];
+};
+
+export type CaseDetail = {
+  case: Case; transaction: Txn; invoice: Invoice | null; proposed: Allocation[]; remittance: Remittance | null;
+};
+
+export type TdsRow = {
+  component_id: string; invoice_id: string; customer_name: string | null; transaction_id: string;
+  amount: number; tds_section: string | null; tds_status: string | null; supporting_doc: string | null;
+};
+
+export type AuditRow = {
+  log_id: string; entity_type: string; entity_id: string; action: string; actor: string;
+  details: Record<string, unknown> | string; created_at: string;
+};
+
+export class ApiError extends Error {}
+
+let reviewerName = "";
+export const setApiReviewer = (name: string) => { reviewerName = name; };
+
+async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+  const headers = new Headers(init.headers);
+  if (reviewerName) headers.set("X-Reviewer", reviewerName);
+  if (init.body && !(init.body instanceof FormData)) headers.set("Content-Type", "application/json");
+  let res: Response;
+  try {
+    res = await fetch(`/api${path}`, { ...init, headers, cache: "no-store" });
+  } catch {
+    throw new ApiError("Can't reach the ReconcileAI API. Start it with: uvicorn api.main:app --port 8000");
+  }
+  if (!res.ok) {
+    let msg = `${res.status} ${res.statusText}`;
+    try {
+      const j = await res.json();
+      msg = typeof j.detail === "string" ? j.detail : JSON.stringify(j.detail ?? j);
+    } catch {}
+    if (res.status >= 500 && msg.startsWith("5")) msg = "The API is not responding. Is uvicorn running on port 8000?";
+    throw new ApiError(msg);
+  }
+  return res.json() as Promise<T>;
+}
+
+const post = <T,>(path: string, body?: unknown) =>
+  request<T>(path, { method: "POST", body: body instanceof FormData ? body : JSON.stringify(body ?? {}) });
+
+export const api = {
+  summary: () => request<Summary>("/summary"),
+  meta: () => request<{ tds_sections: Record<string, number>; audit_actions: string[] }>("/meta"),
+  transactions: () => request<Txn[]>("/transactions"),
+  transaction: (id: string) => request<{ transaction: Txn; allocations: Allocation[] }>(`/transactions/${id}`),
+  reconcileOne: (id: string) => post<{ outcome: string; invoice_id?: string }>(`/transactions/${id}/reconcile`),
+  reverse: (id: string, notes: string) => post(`/transactions/${id}/reverse`, { notes }),
+  invoices: () => request<Invoice[]>("/invoices"),
+  openInvoices: (credit: number) => request<Invoice[]>(`/invoices/open?credit=${credit}`),
+  review: () => request<Case[]>("/review"),
+  resolved: () => request<Case[]>("/review/resolved"),
+  case: (id: string) => request<CaseDetail>(`/review/${id}`),
+  decide: (id: string, body: { action: string; notes?: string; invoice_ids?: string[]; tds_amount?: number;
+    tds_section?: string | null }) => post<Record<string, unknown>>(`/review/${id}/decide`, body),
+  loadDemo: () => post<{ already_loaded?: boolean; invoices?: number; transactions?: number }>("/demo/load"),
+  reconcile: () => post<{ total: number; matched: number; needs_review: number; unmatched: number;
+    duplicates?: number }>("/reconcile"),
+  importFile: (kind: "bank" | "invoice" | "remittance", form: FormData) =>
+    post<Record<string, unknown> & { success?: boolean; reason?: string; duplicate_file?: boolean }>(`/import/${kind}`, form),
+  documents: () => request<{ document_id: string; filename: string; document_type: string | null; upload_time: string }[]>("/documents"),
+  aging: () => request<{ as_of: string; buckets: { bucket: string; invoices: number; outstanding: number }[];
+    by_customer: Record<string, string | number | null>[]; detail: Record<string, string | number | null>[] }>("/reports/aging"),
+  customers: () => request<Record<string, string | number | null>[]>("/reports/customers"),
+  tds: () => request<TdsRow[]>("/reports/tds"),
+  verifyTds: (id: string, form: FormData) => post(`/tds/${id}/verify`, form),
+  rejectTds: (id: string, notes: string) => post<{ invoice_id?: string; new_outstanding?: number }>(`/tds/${id}/reject`, { notes }),
+  draftSummary: () => post<{ text: string; used_llm: boolean }>("/reports/draft-summary"),
+  audit: (q: { q?: string; entity?: string; action?: string }) => {
+    const p = new URLSearchParams(Object.entries(q).filter(([, v]) => v) as [string, string][]);
+    return request<AuditRow[]>(`/audit?${p}`);
+  },
+  ask: (query: string) => post<{ answer: string; used_llm: boolean; source: string | null; rows: unknown }>("/ask", { query }),
+};

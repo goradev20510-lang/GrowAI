@@ -32,7 +32,11 @@ CREATE TABLE IF NOT EXISTS invoices (
     status            TEXT NOT NULL DEFAULT 'open',
     -- open | partially_paid | settled | overpaid
     source_document_id TEXT,
-    created_at        TEXT NOT NULL DEFAULT (datetime('now'))
+    created_at        TEXT NOT NULL DEFAULT (datetime('now')),
+    invoice_number    TEXT,                       -- as printed; may repeat across customers / years
+    opening_paid      REAL NOT NULL DEFAULT 0,    -- paid before the invoice was imported
+    rounding_writeoff REAL NOT NULL DEFAULT 0,    -- residue within tolerance, recalculated
+    verified          INTEGER NOT NULL DEFAULT 1  -- 0 = model-read, not yet confirmed by a person
 );
 
 -- ── Bank Transactions ─────────────────────────────────────────────────────────
@@ -107,7 +111,9 @@ CREATE TABLE IF NOT EXISTS payment_allocations (
     decision_reason    TEXT,
     approved_by        TEXT,        -- 'system' or user name
     approved_at        TEXT,
-    created_at         TEXT NOT NULL DEFAULT (datetime('now'))
+    created_at         TEXT NOT NULL DEFAULT (datetime('now')),
+    remittance_id      TEXT,
+    from_credit_id     TEXT          -- set when the money comes from a held customer credit
 );
 
 -- ── Settlement Components ─────────────────────────────────────────────────────
@@ -148,7 +154,9 @@ CREATE TABLE IF NOT EXISTS audit_logs (
     action        TEXT NOT NULL,
     actor         TEXT NOT NULL DEFAULT 'system',
     details       TEXT,            -- JSON
-    created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+    created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    prev_hash     TEXT,
+    entry_hash    TEXT             -- hash chain: editing any earlier entry breaks verification
 );
 
 -- ── Reconciliation Batches ────────────────────────────────────────────────────
@@ -163,6 +171,43 @@ CREATE TABLE IF NOT EXISTS reconciliation_batches (
     status            TEXT DEFAULT 'running'
 );
 
+-- ── Customer credits (advances and overpayments held for a customer) ──────────
+CREATE TABLE IF NOT EXISTS customer_credits (
+    credit_id      TEXT PRIMARY KEY,
+    transaction_id TEXT NOT NULL REFERENCES bank_transactions(transaction_id),
+    customer_id    TEXT REFERENCES customers(customer_id),
+    amount         REAL NOT NULL,
+    status         TEXT NOT NULL DEFAULT 'open',   -- open | void
+    created_by     TEXT,
+    created_at     TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- ── Invoice adjustments (credit notes, write-offs, bank charges) ──────────────
+CREATE TABLE IF NOT EXISTS invoice_adjustments (
+    adjustment_id TEXT PRIMARY KEY,
+    invoice_id    TEXT NOT NULL REFERENCES invoices(invoice_id),
+    kind          TEXT NOT NULL,                   -- credit_note | write_off | bank_charge
+    amount        REAL NOT NULL,
+    reference     TEXT,
+    notes         TEXT,
+    status        TEXT NOT NULL DEFAULT 'active',  -- active | reversed
+    created_by    TEXT,
+    created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- ── Users (login) ─────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS users (
+    username      TEXT PRIMARY KEY,
+    password_hash TEXT NOT NULL,
+    role          TEXT NOT NULL DEFAULT 'viewer',  -- viewer | reviewer | admin
+    created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TRIGGER IF NOT EXISTS audit_no_update BEFORE UPDATE ON audit_logs
+BEGIN SELECT RAISE(ABORT, 'audit log entries cannot be changed'); END;
+CREATE TRIGGER IF NOT EXISTS audit_no_delete BEFORE DELETE ON audit_logs
+BEGIN SELECT RAISE(ABORT, 'audit log entries cannot be deleted'); END;
+
 -- ── Indexes ───────────────────────────────────────────────────────────────────
 CREATE INDEX IF NOT EXISTS idx_invoices_customer    ON invoices(customer_id);
 CREATE INDEX IF NOT EXISTS idx_invoices_status      ON invoices(status);
@@ -174,4 +219,7 @@ CREATE INDEX IF NOT EXISTS idx_audit_entity         ON audit_logs(entity_type, e
 CREATE INDEX IF NOT EXISTS idx_review_status        ON review_cases(status);
 CREATE INDEX IF NOT EXISTS idx_review_txn           ON review_cases(transaction_id);
 CREATE INDEX IF NOT EXISTS idx_remit_utr            ON remittance_records(utr);
+CREATE INDEX IF NOT EXISTS idx_credit_txn           ON customer_credits(transaction_id);
+CREATE INDEX IF NOT EXISTS idx_adj_invoice          ON invoice_adjustments(invoice_id);
+CREATE INDEX IF NOT EXISTS idx_txn_amount           ON bank_transactions(credit_amount);
 CREATE INDEX IF NOT EXISTS idx_setl_alloc           ON settlement_components(allocation_id);

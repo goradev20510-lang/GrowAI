@@ -6,6 +6,7 @@ and lightweight in-place migrations for databases created by older versions.
 from __future__ import annotations
 import sqlite3
 import threading
+from contextlib import contextmanager
 from pathlib import Path
 
 from config import settings
@@ -42,7 +43,48 @@ def get_connection() -> sqlite3.Connection:
         conn.execute("PRAGMA journal_mode = WAL")
         _local.conn = conn
         _local.path = path
+        _local.depth = 0
     return conn
+
+
+def commit() -> None:
+    """Commit, unless an enclosing transaction() owns the commit."""
+    if getattr(_local, "depth", 0) == 0:
+        get_connection().commit()
+
+
+@contextmanager
+def transaction():
+    """
+    Make every write inside the block atomic. The outermost block takes SQLite's
+    write lock immediately, so state checked inside it cannot change underneath us.
+    Nested blocks become savepoints.
+    """
+    conn = get_connection()
+    depth = getattr(_local, "depth", 0)
+    name = f"sp{depth}"
+    if depth == 0:
+        if conn.in_transaction:
+            conn.commit()
+        conn.execute("BEGIN IMMEDIATE")
+    else:
+        conn.execute(f"SAVEPOINT {name}")
+    _local.depth = depth + 1
+    try:
+        yield conn
+    except BaseException:
+        _local.depth = depth
+        if depth == 0:
+            conn.rollback()
+        else:
+            conn.execute(f"ROLLBACK TO {name}")
+            conn.execute(f"RELEASE {name}")
+        raise
+    _local.depth = depth
+    if depth == 0:
+        conn.commit()
+    else:
+        conn.execute(f"RELEASE {name}")
 
 
 def initialise_database() -> None:
@@ -55,15 +97,19 @@ def initialise_database() -> None:
 
 
 def reset_database() -> None:
-    """Delete every row in every table (keeps the schema). Used by 'Reset data'."""
+    """Delete all business data (keeps the schema and user accounts). Used by tests and demos."""
     conn = get_connection()
+    conn.commit()
     conn.execute("PRAGMA foreign_keys = OFF")
-    for table in ("settlement_components", "payment_allocations", "review_cases",
-                  "remittance_records", "extractions", "audit_logs", "reconciliation_batches",
+    conn.execute("DROP TRIGGER IF EXISTS audit_no_update")
+    conn.execute("DROP TRIGGER IF EXISTS audit_no_delete")
+    for table in ("settlement_components", "payment_allocations", "customer_credits", "invoice_adjustments",
+                  "review_cases", "remittance_records", "extractions", "audit_logs", "reconciliation_batches",
                   "bank_transactions", "invoices", "customers", "documents"):
         conn.execute(f"DELETE FROM {table}")
     conn.commit()
     conn.execute("PRAGMA foreign_keys = ON")
+    initialise_database()                # restores the audit triggers
 
 
 def close_connection() -> None:
@@ -73,6 +119,7 @@ def close_connection() -> None:
         conn.close()
     _local.conn = None
     _local.path = None
+    _local.depth = 0
 
 
 # ── Migrations ────────────────────────────────────────────────────────────────
@@ -129,6 +176,26 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE remittance_records ADD COLUMN tds_section TEXT")
     if _table_exists(conn, "remittance_records") and "customer_gstin" not in _columns(conn, "remittance_records"):
         conn.execute("ALTER TABLE remittance_records ADD COLUMN customer_gstin TEXT")
+
+    # v3: ledger columns
+    for table, column, ddl in (
+            ("invoices", "invoice_number", "TEXT"),
+            ("invoices", "rounding_writeoff", "REAL NOT NULL DEFAULT 0"),
+            ("invoices", "verified", "INTEGER NOT NULL DEFAULT 1"),
+            ("payment_allocations", "remittance_id", "TEXT"),
+            ("payment_allocations", "from_credit_id", "TEXT"),
+            ("audit_logs", "prev_hash", "TEXT"),
+            ("audit_logs", "entry_hash", "TEXT")):
+        if _table_exists(conn, table) and column not in _columns(conn, table):
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+
+    # v3: what was already paid before import is kept, so recalculation never forgets it
+    if _table_exists(conn, "invoices") and "opening_paid" not in _columns(conn, "invoices"):
+        conn.execute("ALTER TABLE invoices ADD COLUMN opening_paid REAL NOT NULL DEFAULT 0")
+        applied = ("COALESCE((SELECT SUM(allocated_amount) FROM payment_allocations pa "
+                   "WHERE pa.invoice_id = invoices.invoice_id AND pa.allocation_status='approved'), 0)"
+                   if _table_exists(conn, "payment_allocations") else "0")
+        conn.execute(f"UPDATE invoices SET opening_paid = MAX(0, ROUND(total_amount - outstanding_amount - {applied}, 2))")
 
     # v2: older engines opened a new case on every re-run. Keep only the newest open
     # case per transaction; the rest are marked 'superseded' (idempotent).

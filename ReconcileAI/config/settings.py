@@ -37,7 +37,11 @@ LLM_TIMEOUT_SECONDS: float      = float(os.getenv("LLM_TIMEOUT_SECONDS", 60))
 
 # Master switch. When off (or no key is configured) every LLM feature falls back
 # to deterministic rule-based extraction and template explanations.
-LLM_ENABLED: bool = _flag("LLM_ENABLED", True)
+APP_ENV:   str = os.getenv("APP_ENV",   "development")
+# In production, sending document text to a model provider needs explicit consent.
+LLM_DATA_CONSENT: bool = _flag("LLM_DATA_CONSENT", APP_ENV != "production")
+LLM_ENABLED: bool = _flag("LLM_ENABLED", True) and LLM_DATA_CONSENT
+LLM_MASK_SENSITIVE: bool = _flag("LLM_MASK_SENSITIVE", True)
 # Ask the LLM to read bank narrations that carry no invoice reference (one call per such line).
 LLM_NARRATION_HINTS: bool = _flag("LLM_NARRATION_HINTS", True)
 # Ask the LLM to phrase match explanations (one call per auto-match). Off by default:
@@ -57,9 +61,13 @@ ALLOWED_EXTENSIONS = {
 }
 
 # ── Application ───────────────────────────────────────────────────────────────
-APP_ENV:   str = os.getenv("APP_ENV",   "development")
 LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
 DEFAULT_REVIEWER: str = os.getenv("DEFAULT_REVIEWER", "Finance Team")
+
+# ── Login ─────────────────────────────────────────────────────────────────────
+# On by default in production. Users come from scripts/create_user.py or the
+# RECONCILE_ADMIN_USER / RECONCILE_ADMIN_PASSWORD bootstrap variables.
+AUTH_ENABLED: bool = _flag("RECONCILE_AUTH", APP_ENV == "production")
 
 # ── Directories ───────────────────────────────────────────────────────────────
 DATA_RAW_DIR: Path = ROOT_DIR / "data" / "raw"

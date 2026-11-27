@@ -4,8 +4,9 @@ Uses RapidFuzz to find likely customer candidates when names don't match exactly
 Identity is confirmed only if corroborated by GSTIN or additional evidence.
 """
 from __future__ import annotations
+import json
 import re
-from rapidfuzz import fuzz, process
+from rapidfuzz import fuzz
 
 import config.thresholds as _thresholds
 
@@ -31,10 +32,49 @@ def normalize_customer_name(name: str) -> str:
     return re.sub(r"\s+", " ", n).strip()
 
 
+# Words that describe a kind of business, not a particular one.
+_LEGAL = {"private", "limited", "llp", "company", "corporation", "pvt", "ltd", "co", "corp", "inc", "the", "m", "s"}
+_GENERIC = {"solutions", "solution", "systems", "system", "technologies", "technology", "tech", "enterprises",
+            "enterprise", "industries", "industry", "traders", "trading", "trade", "infotech", "logistics",
+            "consultants", "consultancy", "services", "software", "retail", "healthcare", "analytics",
+            "infrastructure", "partners", "group", "india", "international", "agencies", "sons", "associates"}
+
+
+def _core(name: str) -> list[str]:
+    return [w for w in normalize_customer_name(name).split() if w not in _LEGAL]
+
+
+def name_similarity(payer: str, customer: str) -> float:
+    """
+    0–100. Legal suffixes are ignored, and shared business words are never enough:
+    something distinctive in the customer's name must show up in the payer's.
+    """
+    p, c = _core(payer), _core(customer)
+    if not p or not c:
+        return 0.0
+    p_joined, c_joined = "".join(p), "".join(c)
+    if p_joined == c_joined:
+        return 100.0
+    distinctive = [w for w in c if w not in _GENERIC and len(w) > 1]
+    if distinctive:
+        evidence = any(
+            (len(w) >= 3 and w in p_joined)
+            or any(fuzz.ratio(w, t) >= 80 or (len(t) >= 4 and w.startswith(t)) for t in p if t not in _GENERIC)
+            for w in distinctive)
+        if not evidence:
+            return 0.0
+    elif fuzz.ratio(p_joined, c_joined) < 90:
+        return 0.0
+    score = max(fuzz.token_set_ratio(" ".join(p), " ".join(c)), fuzz.ratio(p_joined, c_joined))
+    if len(p_joined) >= 8 and c_joined.startswith(p_joined):       # banks truncate long names
+        score = max(score, 90.0)
+    return float(score)
+
+
 def fuzzy_match_customer(candidate_name: str, all_customers: list[dict],
                           threshold: int | None = None) -> list[dict]:
     """
-    Return customers whose normalised name is within fuzzy threshold of candidate_name.
+    Return up to 5 customers whose name (or a recorded alias) scores at least `threshold`.
     Each result includes the original customer dict plus a 'fuzzy_score' key.
     """
     if not candidate_name or not all_customers:
@@ -42,28 +82,20 @@ def fuzzy_match_customer(candidate_name: str, all_customers: list[dict],
     if threshold is None:
         threshold = _thresholds.CUSTOMER_NAME_FUZZY_MIN
 
-    norm_candidate = normalize_customer_name(candidate_name)
-    customer_norms = {c["customer_id"]: normalize_customer_name(c["name"]) for c in all_customers}
-
-    # Build list of (norm_name, customer_id) for process.extract
-    choices = {cid: name for cid, name in customer_norms.items()}
-    results = process.extract(
-        norm_candidate,
-        choices,
-        scorer=fuzz.token_set_ratio,
-        limit=5,
-    )
-    # results → [(matched_name, score, customer_id), ...]
-
     matched = []
-    for matched_name, score, cid in results:
+    for customer in all_customers:
+        aliases = customer.get("name_variants") or []
+        if isinstance(aliases, str):
+            try:
+                aliases = json.loads(aliases)
+            except ValueError:
+                aliases = []
+        score = max(name_similarity(candidate_name, n) for n in [customer["name"], *aliases])
         if score >= threshold:
-            customer = next((c for c in all_customers if c["customer_id"] == cid), None)
-            if customer:
-                matched.append({**customer, "fuzzy_score": score})
+            matched.append({**customer, "fuzzy_score": score})
 
     matched.sort(key=lambda x: x["fuzzy_score"], reverse=True)
-    return matched
+    return matched[:5]
 
 
 def match_customer_identity(payer_name: str | None, payer_gstin: str | None,

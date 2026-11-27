@@ -4,6 +4,7 @@ Decides the reconciliation outcome for each transaction using scored candidates
 and validation results. The LLM only reads narrations / phrases explanations;
 this module decides.
 
+  auto_block_reason()     – why a high score still needs a person (None = may auto-approve)
   evaluate_transaction()  – pure: reads the DB, writes nothing (used by the
                             Workspace "why?" panel and by reconcile_transaction)
   reconcile_transaction() – evaluate + persist allocations, review cases, audit
@@ -20,12 +21,15 @@ from typing import Callable
 import config.thresholds as T
 from config.settings import LLM_NARRATION_HINTS, LLM_MATCH_EXPLANATIONS
 from database.repositories import (
-    get_transaction, get_remittance_by_utr, find_remittances_by_amount,
+    get_all_invoices, get_transaction, get_remittance_by_utr, find_remittances_by_amount,
     insert_allocation, insert_settlement_component, update_transaction_status,
     create_audit_log, insert_review_case, update_review_case, get_open_cases_for_transaction,
-    get_rejected_invoice_ids, get_unmatched_transactions, update_batch, create_batch,
-    get_audit_logs,
+    get_rejected_invoice_ids, get_all_transactions, update_batch, create_batch,
+    get_allocations_for_transaction, update_allocation_status, set_batch_status,
+    get_audit_logs, get_invoice, update_decision_reason,
 )
+from database.db import transaction
+from decision.credits import sync_customer_credit
 from matching.candidate_generator import generate_candidate_invoices, _extract_from_narration
 from matching.scoring import score_candidates
 from validation.financial_rules import validate_allocation, infer_tds_deduction
@@ -46,6 +50,9 @@ SUGGESTED_ACTIONS = {
     "missing_invoice_reference":   "No invoice could be identified. Obtain the remittance advice from the payer, then Correct.",
     "unknown_customer":            "Payer does not match any customer. Identify the payer, or dismiss if this is not a receivable.",
     "possible_duplicate":          "Same transfer appears more than once. Confirm it is a duplicate, or release it if genuine.",
+    "payer_mismatch":              "The payer could not be tied to the invoice's customer — confirm who paid.",
+    "unverified_evidence":         "The match rests on evidence that needs a person to check it before posting.",
+    "processing_error":            "The engine failed on this line. Check the audit trail, then apply it manually.",
 }
 
 
@@ -53,21 +60,41 @@ SUGGESTED_ACTIONS = {
 # Evaluation (no writes)
 # ═════════════════════════════════════════════════════════════════════════════
 
-def is_auto_approvable_partial(validation: dict, tds_amount: float, implied_tds: dict | None) -> bool:
-    """
-    A part-payment carrying an exact invoice reference may be auto-applied: part
-    payment is a business fact, not an error. Not when TDS is involved (declared or
-    implied) — those need a human to confirm the deduction.
-    """
-    av = validation["amount_validation"]
-    return bool(av["is_partial"] and not av["is_overpayment"] and tds_amount == 0 and implied_tds is None)
+def remittance_fits(txn: dict, remittance: dict | None) -> bool:
+    """The advice's stated amount (if any) agrees with what the bank actually received."""
+    paid = (remittance or {}).get("payment_amount")
+    if paid in (None, "", 0):
+        return True
+    credit = float(txn.get("credit_amount") or 0)
+    return abs(Decimal(str(paid)) - Decimal(str(credit))) <= T.amount_tolerance(credit)
+
+
+def auto_block_reason(txn: dict, cand: dict, remittance: dict | None, link: str | None) -> tuple[str, str] | None:
+    """(exception type, reason) if this candidate must be reviewed whatever its score."""
+    sig, inv = cand["signals"], cand["invoice"]
+    if remittance and not remittance_fits(txn, remittance):
+        return ("unverified_evidence",
+                f"The remittance advice states ₹{float(remittance['payment_amount']):,.2f}, not the amount received.")
+    if not sig.get("invoice_ref_exact"):
+        return ("low_confidence_match", "No invoice reference identifies this invoice.")
+    from_advice = bool(remittance) and link == "utr" and sig.get("ref_source") == "remittance"
+    if not (sig.get("ref_in_narration") or from_advice):
+        return ("unverified_evidence", "The invoice reference was not read from the bank line or from a "
+                                       "remittance advice carrying this UTR.")
+    if not sig.get("customer_match"):
+        return ("payer_mismatch", f"Payer '{sig.get('payer_hint') or 'not stated'}' does not match "
+                                  f"{inv.get('customer_name')}.")
+    if not inv.get("verified", 1):
+        return ("unverified_evidence", f"{inv['invoice_id']} was read by the model and has not been confirmed.")
+    return None
 
 
 def _find_remittance(transaction: dict) -> tuple[dict | None, str | None]:
     rem = get_remittance_by_utr(transaction.get("utr"))
     if rem:
         return rem, "utr"
-    matches = find_remittances_by_amount(transaction.get("credit_amount", 0), transaction.get("transaction_date"))
+    matches = find_remittances_by_amount(transaction.get("credit_amount", 0), transaction.get("transaction_date"),
+                                         for_transaction=transaction.get("transaction_id"))
     if len(matches) == 1:
         return matches[0], "amount_and_date"
     return None, None
@@ -88,7 +115,7 @@ def _find_bulk_combo(transaction: dict, ranked: list[dict], tds_amount: float) -
     if len(pool) < 2:
         return None
     effective = Decimal(str(transaction.get("credit_amount", 0))) + Decimal(str(tds_amount))
-    tol = max(effective * T.AMOUNT_TOLERANCE_PERCENT, Decimal("1"))
+    tol = max(T.amount_tolerance(effective), Decimal("1"))
     refs = {c["invoice"]["invoice_id"] for c in pool if c["signals"].get("invoice_ref_exact")}
     best = None
     for n in range(2, min(MAX_BULK_INVOICES, len(pool)) + 1):
@@ -106,7 +133,22 @@ def _find_bulk_combo(transaction: dict, ranked: list[dict], tds_amount: float) -
     return best[1] if best else None
 
 
-def evaluate_transaction(transaction: dict | str, *, use_llm: bool = True) -> dict:
+def narration_hints(txn: dict) -> dict | None:
+    """Ask the model to read a narration that has no reference of its own (never inside a DB lock)."""
+    if not (LLM_NARRATION_HINTS and txn and float(txn.get("credit_amount") or 0) > 0):
+        return None
+    from extraction.llm_extractor import llm_available, interpret_bank_narration
+    refs, _ = _extract_from_narration(txn.get("narration") or "", get_all_invoices())
+    if refs or _find_remittance(txn)[0] or not llm_available():
+        return None
+    try:
+        return interpret_bank_narration(txn.get("narration") or "", float(txn["credit_amount"]),
+                                        txn.get("transaction_date"))
+    except Exception:
+        return None
+
+
+def evaluate_transaction(transaction: dict | str, *, use_llm: bool = True, hints: dict | None = None) -> dict:
     """
     Work out what should happen to one bank credit. Reads the database, writes nothing.
 
@@ -140,15 +182,8 @@ def evaluate_transaction(transaction: dict | str, *, use_llm: bool = True) -> di
     remittance, link = _find_remittance(txn)
 
     # 3. Narration hints via LLM — only when the narration has no reference of its own
-    hints = None
-    if use_llm and LLM_NARRATION_HINTS and not remittance:
-        from extraction.llm_extractor import llm_available, interpret_bank_narration
-        refs, _ = _extract_from_narration(txn.get("narration") or "")
-        if not refs and llm_available():
-            try:
-                hints = interpret_bank_narration(txn.get("narration") or "", credit, txn.get("transaction_date"))
-            except Exception:
-                hints = None
+    if use_llm and hints is None and not remittance:
+        hints = narration_hints(txn)
 
     # 4. Candidates and scores
     excluded = get_rejected_invoice_ids(tid)
@@ -166,9 +201,9 @@ def evaluate_transaction(transaction: dict | str, *, use_llm: bool = True) -> di
     tds_amount = float(signals.get("tds_amount") or 0)
     tds_section = signals.get("tds_section")
     validation = validate_allocation(credit, tds_amount, invoice, tds_section=tds_section,
-                                     has_tds_certificate=False)
+                                     has_tds_certificate=False, on=txn.get("transaction_date"))
     av = validation["amount_validation"]
-    implied = infer_tds_deduction(credit, invoice) if tds_amount == 0 and av["is_partial"] else None
+    implied = infer_tds_deduction(credit, invoice, on=txn.get("transaction_date")) if tds_amount == 0 and av["is_partial"] else None
     base.update(ranked=ranked, best=best, score=score, validation=validation,
                 tds_amount=tds_amount, tds_section=tds_section, implied_tds=implied)
 
@@ -176,14 +211,11 @@ def evaluate_transaction(transaction: dict | str, *, use_llm: bool = True) -> di
     amount_fits = av["within_tolerance"]
 
     # 5. Decision gates (mirrored in training/train_matcher.decide)
-    if not ambiguous:
-        if score >= T.AUTO_MATCH_THRESHOLD and validation["overall_valid"] and not validation["requires_review"]:
-            return {**base, "outcome": "matched", "reason": "High-confidence match",
-                    "explanation": build_explanation(txn, best, validation, link)}
-        if (score >= T.AUTO_MATCH_THRESHOLD and signals.get("invoice_ref_exact")
-                and is_auto_approvable_partial(validation, tds_amount, implied)):
-            return {**base, "outcome": "matched", "reason": "Part-payment against a referenced invoice",
-                    "explanation": build_explanation(txn, best, validation, link)}
+    blocked = auto_block_reason(txn, best, remittance, link)
+    if (not ambiguous and not blocked and score >= T.AUTO_MATCH_THRESHOLD
+            and validation["overall_valid"] and not validation["requires_review"]):
+        return {**base, "outcome": "matched", "reason": "High-confidence match",
+                "explanation": build_explanation(txn, best, validation, link)}
 
     bulk = None if amount_fits and not ambiguous else _find_bulk_combo(txn, ranked, tds_amount)
     if bulk:
@@ -197,8 +229,13 @@ def evaluate_transaction(transaction: dict | str, *, use_llm: bool = True) -> di
                            f"{alt['invoice']['invoice_id']} ({alt['score']:.2f}) are too close to auto-match.")}
 
     if score >= T.REVIEW_THRESHOLD or validation["requires_review"]:
-        return {**base, "outcome": "review", "exception_type": _exception_type(invoice, validation, tds_amount, implied),
-                "reason": _review_reason(invoice, validation, tds_amount, implied, score)}
+        exc = _exception_type(invoice, validation, tds_amount, implied)
+        reason = _review_reason(invoice, validation, tds_amount, implied, score)
+        if blocked:
+            if exc == "low_confidence_match":
+                exc = blocked[0]
+            reason += " " + blocked[1]
+        return {**base, "outcome": "review", "exception_type": exc, "reason": reason}
 
     return {**base, "outcome": "unmatched", "exception_type": "low_confidence_match",
             "reason": f"Best candidate {invoice['invoice_id']} scored {score:.2f}, below the review threshold "
@@ -274,8 +311,26 @@ def reconcile_transaction(transaction_id: str, *, use_llm: bool = True) -> dict:
     txn = get_transaction(transaction_id)
     if not txn:
         return {"outcome": "error", "reason": "Transaction not found"}
-    ev = evaluate_transaction(txn, use_llm=use_llm)
-    outcome = ev["outcome"]
+    hints = narration_hints(txn) if use_llm else None          # slow call, made before locking
+
+    with transaction():                                        # state is checked and written atomically
+        txn = get_transaction(transaction_id)
+        if txn["status"] in ("matched", "excluded") or any(
+                a["allocation_status"] == "approved" for a in get_allocations_for_transaction(transaction_id)):
+            return {"outcome": "skipped", "reason": f"{transaction_id} is already {txn['status']}"}
+        ev = evaluate_transaction(txn, use_llm=False, hints=hints)
+        result = _persist(txn, ev)
+
+    if result["outcome"] == "matched" and use_llm and LLM_MATCH_EXPLANATIONS:
+        result["explanation"] = _model_explanation(txn, ev, result)
+    return result
+
+
+def _persist(txn: dict, ev: dict) -> dict:
+    transaction_id, outcome = txn["transaction_id"], ev["outcome"]
+    for a in get_allocations_for_transaction(transaction_id):  # replace earlier, unapproved proposals
+        if a["allocation_status"] == "proposed":
+            update_allocation_status(a["allocation_id"], "superseded", "system", "Re-evaluated")
     _supersede_open_cases(transaction_id)
 
     if outcome == "excluded":
@@ -291,10 +346,27 @@ def reconcile_transaction(transaction_id: str, *, use_llm: bool = True) -> dict:
         return {"outcome": "duplicate", "reason": ev["reason"], "duplicate_of": ev["duplicate_of"],
                 "review_case_id": cid}
     if outcome == "matched":
-        return _auto_approve(txn, ev, use_llm=use_llm)
+        return _auto_approve(txn, ev)
     if outcome == "review":
         return _send_to_review(txn, ev)
     return _mark_unmatched(txn, ev)
+
+
+def _model_explanation(txn: dict, ev: dict, result: dict) -> str:
+    from extraction.llm_extractor import llm_available, generate_match_explanation
+    best, text = ev["best"], result["explanation"]
+    if llm_available():
+        try:
+            text = generate_match_explanation({
+                "transaction_id": txn["transaction_id"], "invoice_id": result["invoice_id"],
+                "confidence_score": ev["score"],
+                "signals": {k: v for k, v in best["signals"].items() if k != "invoice_refs"},
+                "validation": ev["validation"], "deterministic_explanation": text,
+            }).strip() or text
+            update_decision_reason(result["allocation_id"], text)
+        except Exception:
+            pass
+    return text
 
 
 def _supersede_open_cases(transaction_id: str) -> None:
@@ -309,36 +381,30 @@ def _add_components(aid: str, credit: float, tds: float, tds_status: str | None,
                                      "tds_status": tds_status or "claimed", "tds_section": tds_section})
 
 
-def _auto_approve(txn: dict, ev: dict, use_llm: bool = True) -> dict:
+def _auto_approve(txn: dict, ev: dict) -> dict:
     tid = txn["transaction_id"]
     best, validation, score = ev["best"], ev["validation"], ev["score"]
     iid = best["invoice"]["invoice_id"]
     credit, tds = float(txn["credit_amount"]), float(ev["tds_amount"])
     explanation = ev.get("explanation") or build_explanation(txn, best, validation, ev.get("remittance_link"))
-
-    if use_llm and LLM_MATCH_EXPLANATIONS:
-        from extraction.llm_extractor import llm_available, generate_match_explanation
-        if llm_available():
-            try:
-                explanation = generate_match_explanation({
-                    "transaction_id": tid, "invoice_id": iid, "confidence_score": score,
-                    "signals": {k: v for k, v in best["signals"].items() if k != "invoice_refs"},
-                    "validation": validation, "deterministic_explanation": explanation,
-                }).strip() or explanation
-            except Exception:
-                pass
+    # Never apply more than the invoice owes; any excess becomes customer credit.
+    applied = round(min(credit + tds, float(get_invoice(iid)["outstanding_amount"])), 2)
 
     aid = insert_allocation({
-        "transaction_id": tid, "invoice_id": iid, "allocated_amount": credit + tds,
+        "transaction_id": tid, "invoice_id": iid, "allocated_amount": applied,
         "allocation_status": "approved", "confidence_score": score,
         "decision_reason": explanation, "approved_by": "system",
+        "remittance_id": (ev.get("remittance") or {}).get("remittance_id"),
     })
-    _add_components(aid, credit, tds, validation["tds_validation"].get("tds_status"), ev["tds_section"])
+    _add_components(aid, round(applied - tds, 2), tds, validation["tds_validation"].get("tds_status"),
+                    ev["tds_section"])
     settlement = finalise_settlement(iid, audit=False)
     update_transaction_status(tid, "matched")
+    sync_customer_credit(tid, "system")
     create_audit_log("transaction", tid, "auto_matched",
                      details={"invoice_id": iid, "score": score, "allocation_id": aid,
-                              "reason": ev.get("reason"), "invoice_status": settlement.get("status")})
+                              "reason": ev.get("reason"), "invoice_status": settlement.get("status"),
+                              "rounding_writeoff": settlement.get("rounding_writeoff")})
     return {"outcome": "matched", "invoice_id": iid, "score": score, "allocation_id": aid,
             "explanation": explanation, "new_outstanding": settlement.get("outstanding")}
 
@@ -350,27 +416,30 @@ def _send_to_review(txn: dict, ev: dict) -> dict:
     best = ev["best"]
     allocation_ids: list[str] = []
 
+    rem_id = (ev.get("remittance") or {}).get("remittance_id")
     if ev.get("bulk_invoices"):
         invoices = ev["bulk_invoices"]
-        total_out = sum(Decimal(str(i["outstanding_amount"])) for i in invoices)
-        remaining_credit, remaining_tds = Decimal(str(credit)), Decimal(str(tds))
+        owed = [Decimal(str(i["outstanding_amount"])) for i in invoices]
+        total_out, effective = sum(owed), Decimal(str(credit)) + Decimal(str(tds))
+        remaining, remaining_tds = min(effective, total_out), Decimal(str(tds))
         for k, inv in enumerate(invoices):
-            share = Decimal(str(inv["outstanding_amount"])) / total_out
-            if k == len(invoices) - 1:           # last one absorbs rounding
-                c_part, t_part = remaining_credit, remaining_tds
-            else:
-                c_part = (Decimal(str(credit)) * share).quantize(Decimal("0.01"))
-                t_part = (Decimal(str(tds)) * share).quantize(Decimal("0.01"))
-            remaining_credit -= c_part
+            last = k == len(invoices) - 1
+            share = owed[k] / total_out
+            if effective >= total_out:
+                portion = owed[k]
+            else:                                   # short within tolerance: spread it
+                portion = remaining if last else (effective * share).quantize(Decimal("0.01"))
+            t_part = remaining_tds if last else (Decimal(str(tds)) * share).quantize(Decimal("0.01"))
+            remaining -= portion
             remaining_tds -= t_part
             aid = insert_allocation({
                 "transaction_id": tid, "invoice_id": inv["invoice_id"],
-                "allocated_amount": float(c_part + t_part), "allocation_status": "proposed",
+                "allocated_amount": float(portion), "allocation_status": "proposed",
                 "confidence_score": ev["score"],
                 "decision_reason": f"Bulk payment split {k + 1}/{len(invoices)}: {ev['reason']}",
-                "approved_by": None,
+                "approved_by": None, "remittance_id": rem_id,
             })
-            _add_components(aid, float(c_part), float(t_part), "claimed", ev["tds_section"])
+            _add_components(aid, float(portion - t_part), float(t_part), "claimed", ev["tds_section"])
             allocation_ids.append(aid)
         suggested_invoice = invoices[0]["invoice_id"]
     else:
@@ -378,20 +447,26 @@ def _send_to_review(txn: dict, ev: dict) -> dict:
         implied = ev.get("implied_tds")
         tds_total = tds or (implied["tds_amount"] if implied else 0.0)
         section = ev["tds_section"] or (implied["sections"][0] if implied else None)
-        aid = insert_allocation({
-            "transaction_id": tid, "invoice_id": inv["invoice_id"],
-            "allocated_amount": credit + tds_total, "allocation_status": "proposed",
-            "confidence_score": ev["score"],
-            "decision_reason": build_explanation(txn, best, ev["validation"], ev.get("remittance_link")),
-            "approved_by": None,
-        })
-        tds_status = ev["validation"]["tds_validation"].get("tds_status") if tds else "claimed"
-        _add_components(aid, credit, tds_total, tds_status, section)
-        allocation_ids.append(aid)
+        applied = round(min(credit + tds_total, float(inv["outstanding_amount"])), 2)
         suggested_invoice = inv["invoice_id"]
+        if applied > 0:                             # nothing to propose on a settled invoice
+            aid = insert_allocation({
+                "transaction_id": tid, "invoice_id": inv["invoice_id"],
+                "allocated_amount": applied, "allocation_status": "proposed",
+                "confidence_score": ev["score"],
+                "decision_reason": build_explanation(txn, best, ev["validation"], ev.get("remittance_link")),
+                "approved_by": None, "remittance_id": rem_id,
+            })
+            tds_total = min(tds_total, applied)
+            tds_status = ev["validation"]["tds_validation"].get("tds_status") if tds else "claimed"
+            _add_components(aid, round(applied - tds_total, 2), tds_total, tds_status, section)
+            allocation_ids.append(aid)
 
     alternatives = [f"{c['invoice']['invoice_id']} ({c['score']:.2f})" for c in ev["ranked"][1:4]]
     summary = ev["reason"] + (f" Other candidates: {', '.join(alternatives)}." if alternatives else "")
+    if (allocation_ids and not ev.get("bulk_invoices")
+            and ev["validation"]["amount_validation"]["is_overpayment"]):
+        summary += " On approval the excess is held as customer credit."
     cid = insert_review_case({
         "transaction_id": tid, "invoice_id": suggested_invoice, "exception_type": exc,
         "exception_summary": summary, "suggested_action": SUGGESTED_ACTIONS.get(exc),
@@ -418,30 +493,53 @@ def _mark_unmatched(txn: dict, ev: dict) -> dict:
     return {"outcome": "unmatched", "review_case_id": cid, "reason": ev.get("reason"), "score": ev.get("score", 0.0)}
 
 
+def pending_transactions() -> list[dict]:
+    """Everything still undecided: unmatched credits and those waiting in review."""
+    return [t for t in get_all_transactions()
+            if t["status"] in ("unmatched", "review") and float(t["credit_amount"] or 0) > 0]
+
+
 def run_batch_reconciliation(batch_id: str | None = None, *, use_llm: bool = True,
                              progress: Callable[[int, int, dict], None] | None = None) -> dict:
     """
-    Run reconciliation on every unmatched credit, in import order. Unmatched lines
-    that already have an open case are re-evaluated (new invoices/remittances may
-    have arrived since) and their old case is superseded.
+    Run reconciliation on every undecided credit, in import order. Lines already in
+    review are re-evaluated too (new invoices or remittances may have arrived) and
+    their old case is superseded.
     """
     if not batch_id:
         batch_id = create_batch()
 
-    transactions = get_unmatched_transactions()
+    transactions = pending_transactions()
     stats = {"total": len(transactions), "matched": 0, "needs_review": 0, "unmatched": 0, "duplicates": 0}
-    for k, txn in enumerate(transactions, 1):
-        try:
-            result = reconcile_transaction(txn["transaction_id"], use_llm=use_llm)
-        except Exception as e:                       # one bad line must not stop the batch
-            create_audit_log("transaction", txn["transaction_id"], "reconcile_error", details={"error": str(e)})
-            result = {"outcome": "unmatched"}
-        outcome = result.get("outcome", "unmatched")
-        key = {"matched": "matched", "review": "needs_review", "duplicate": "duplicates"}.get(outcome, "unmatched")
-        stats[key] += 1
-        if progress:
-            progress(k, len(transactions), result)
+    try:
+        for k, txn in enumerate(transactions, 1):
+            try:
+                result = reconcile_transaction(txn["transaction_id"], use_llm=use_llm)
+            except Exception as e:                       # one bad line must not stop the batch
+                result = _record_error(txn["transaction_id"], e)
+            outcome = result.get("outcome", "unmatched")
+            key = {"matched": "matched", "review": "needs_review", "duplicate": "duplicates"}.get(outcome, "unmatched")
+            stats[key] += 1
+            if progress:
+                progress(k, len(transactions), result)
+    except BaseException:
+        set_batch_status(batch_id, "failed")
+        raise
 
     update_batch(batch_id, stats)
     create_audit_log("batch", batch_id, "batch_completed", details=stats)
     return {"batch_id": batch_id, **stats}
+
+
+def _record_error(transaction_id: str, error: Exception) -> dict:
+    """A failed line must still reach a person."""
+    with transaction():
+        _supersede_open_cases(transaction_id)
+        update_transaction_status(transaction_id, "review")
+        cid = insert_review_case({
+            "transaction_id": transaction_id, "exception_type": "processing_error",
+            "exception_summary": f"Reconciliation failed: {error}",
+            "suggested_action": SUGGESTED_ACTIONS["processing_error"]})
+        create_audit_log("transaction", transaction_id, "reconcile_error",
+                         details={"error": str(error), "review_case": cid})
+    return {"outcome": "review", "review_case_id": cid}

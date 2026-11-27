@@ -35,9 +35,6 @@ flowchart LR
         H3["Reverse a match"]
     end
 
-    T["Offline calibration<br/>training/train_matcher.py"] -.weights + thresholds.-> S
-    T -.-> G
-
     BS --> P --> D --> C
     INV --> X1 --> C
     INV --> R0
@@ -45,7 +42,7 @@ flowchart LR
     REM --> R0 --> C
     BS -.narration.-> X3 -.hints.-> C
     C --> S --> V --> G
-    G -- "exact ref + amount valid,<br/>no close rival" --> L
+    G -- "trusted ref + payer + amount,<br/>no close rival" --> L
     G -- "uncertain / TDS / partial /<br/>bulk / duplicate" --> H1
     G -- "no evidence" --> H1
     H1 --> L
@@ -77,8 +74,8 @@ flowchart LR
 
 | Knowledge | Lives in | When it goes stale |
 |---|---|---|
-| TDS section rates, tolerance, duplicate window | `config/thresholds.py` (code, versioned) | A rate change needs a config change + redeploy. Nothing retrieves it automatically. |
-| How much each signal is worth, and when to auto-match | `config/learned_params.json` (data, versioned) | Retrain on new labelled data (`training/train_matcher.py`). The baseline stays available via `RECONCILE_USE_LEARNED_PARAMS=0`. |
+| TDS rates by effective date, tolerance, duplicate window | `config/thresholds.py` (code, versioned) | A rate change needs a config change + redeploy. Nothing retrieves it automatically. |
+| How much each signal is worth, and when to auto-match | `config/thresholds.py` and the gates in `decision_engine.auto_block_reason` | Changed by code review. Learned weights are opt-in. |
 | Which invoice a vague payment belongs to | The reviewer | Rejections are remembered per credit, so the engine never re-proposes a rejected invoice. |
 | Language patterns of narrations and emails | The LLM + regex | New bank formats show up as review-queue volume, not as wrong postings. |
 
@@ -89,20 +86,21 @@ flowchart LR
 
 **Human in the loop where the law needs one.** TDS is a tax matter, and a deduction is only creditable with the deductor's certificate (Form 16A, cross-checked against 26AS). So the system never treats TDS as settled on its own. It records the claim as *claimed* or *evidence pending*, routes the payment to review, and only a person can mark it *verified* (optionally attaching the certificate) or *reject* it, which re-opens the invoice for the deducted amount. The reviewer's name is recorded on every decision. The tool proposes; the finance team posts.
 
-## Calibrating the matcher
+## Why gates, not just a score
 
-Weights and thresholds were fit on 11.6k labelled synthetic credits. The objective is a business cost, not accuracy: a wrong auto-post costs 10× an avoidable review. The learned policy is easy to state: auto-post only with an exact invoice reference *and* an amount that validates, and only when no rival candidate scores close. A name + amount match always goes to a person. A test (`test_trainer_replay_agrees_with_engine`) checks that the trainer's vectorised replay makes the same decision as the real engine.
+A score trades signals against each other, so a strong amount match could outvote a wrong payer. Auto-posting therefore also requires hard conditions: a trusted invoice reference, a matching payer, an amount that fits a capped tolerance, no TDS, and a confirmed invoice. Weights calibrated on synthetic data had lowered the auto threshold far enough to post a payment from an unrelated payer, so they are now opt-in.
 
 ## Weakest points
 
-1. **Synthetic evaluation.** The labels encode one team's policy, and the generator encodes my guesses about bank narration formats. Real statements would surely contain layouts the parser misses. Those would show up as review volume rather than wrong postings, but auto-match rates could drop sharply.
-2. **Fuzzy customer identity.** A payer truncated to its first word ("APEX") can match the wrong group company. The guard is that a name never auto-posts on its own, but a wrong *suggestion* in review relies on the reviewer noticing.
-3. **Remittance linking by amount.** An email without a UTR is linked to a credit only when exactly one remittance has that amount within ±10 days. Two customers paying the same amount on the same day makes it unlinkable (safe), not mislinked.
-4. **Single-node SQLite, no auth.** This is fine for a prototype, but a multi-user deployment needs a server database, user identity and role separation (preparer ≠ approver).
+1. **Synthetic evaluation.** The generator encodes guesses about bank narration formats. Real statements will contain layouts the parser misses; auto-match rates could drop sharply.
+2. **Fuzzy customer identity.** A payer truncated to one word ("APEX") can match the wrong group company. The invoice-number gate limits the damage.
+3. **Trust in documents.** A forged advice with the right UTR and amount can supply an invoice number. Amounts always come from the bank line.
+4. **Single-node SQLite.** Writes are serialised and atomic, which suits a small team. High volume or several servers would need a server database.
+5. **Access control is basic.** HTTP Basic with three roles; no single sign-on, and no rule that the preparer and approver differ.
 
 ## Considered and rejected
 
 - **Letting the LLM decide matches.** Rejected for the auditability and reproducibility reasons above.
-- **Embedding similarity / retrieval over invoices.** The decisive signals (invoice number, amount, GSTIN) are exact tokens, where string and number matching beats vectors. Retrieval would add a stochastic step for no gain.
-- **Proportional splitting of bulk payments by default.** The engine instead proposes full settlement of each invoice whose balances add up to the credit, and asks a human. Proportional splits leave every invoice part-paid, which is rarely the payer's intent.
-- **Hand-tuned thresholds.** The original 0.80/0.50 thresholds auto-posted only 21 % of credits and left 264 evidence-backed credits (15 %) unmatched in the test split. The calibrated policy auto-posts 44 % with zero errors and leaves 9 unmatched.
+- **Embedding similarity / retrieval over invoices.** The decisive signals (invoice number, amount, GSTIN) are exact tokens, where string and number matching beats vectors.
+- **Proportional splitting of bulk payments by default.** The engine proposes full settlement of each invoice whose balances add up to the credit, and asks a human.
+- **Auto-posting part-payments.** A shortfall can be TDS, a dispute or an error, so a person decides.

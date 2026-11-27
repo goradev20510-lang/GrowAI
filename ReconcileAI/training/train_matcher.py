@@ -42,7 +42,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import config.thresholds as T                              # noqa: E402
-from decision.decision_engine import is_auto_approvable_partial, _find_bulk_combo  # noqa: E402
+from decision.decision_engine import auto_block_reason, _find_bulk_combo  # noqa: E402
 import matching.candidate_generator as cg                  # noqa: E402
 from matching.scoring import score_candidates              # noqa: E402
 from validation.financial_rules import validate_allocation, infer_tds_deduction  # noqa: E402
@@ -82,7 +82,7 @@ def _features(txn: dict, inv: dict, sig: dict) -> tuple[list[float], bool]:
     credit = Decimal(str(txn["credit_amount"])) + Decimal(str(sig.get("tds_amount", 0)))
     total = Decimal(str(inv["total_amount"]))
     out = Decimal(str(inv["outstanding_amount"]))
-    tol = total * T.AMOUNT_TOLERANCE_PERCENT
+    tol = T.amount_tolerance(total)
     amt_exact = amt_tol = 0.0
     if abs(credit - total) <= tol or abs(credit - out) <= tol:
         if credit == total or credit == out:
@@ -122,17 +122,18 @@ def extract(batches: list[dict]) -> dict:
                 f, _ = _features(txn, inv, sig)
                 tds = float(sig.get("tds_amount", 0))
                 v = validate_allocation(txn["credit_amount"], tds, inv,
-                                        tds_section=sig.get("tds_section"), has_tds_certificate=False)
-                implied = (infer_tds_deduction(txn["credit_amount"], inv)
-                           if tds == 0 and v["amount_validation"]["is_partial"] else None)
-                partial_only = is_auto_approvable_partial(v, tds, implied)
+                                        tds_section=sig.get("tds_section"), has_tds_certificate=False,
+                                        on=txn.get("transaction_date"))
+                # Safety gates other than the payer match, which depends on the fuzzy minimum.
+                trusted = auto_block_reason(txn, {**c, "signals": {**sig, "customer_match": True}},
+                                            rem, "utr" if rem else None) is None
                 cand_rows.append({
                     "invoice_id": inv["invoice_id"], "f": f,
                     "fuzzy": float(sig["fuzzy_score"]) if sig["customer_match"] else 0.0,
                     "gstin": sig["match_method"] == "gstin_exact",
                     "from_ref": sig["invoice_ref_exact"], "from_amount": sig["amount_match"],
                     "valid": v["overall_valid"], "needs_review": v["requires_review"],
-                    "partial_only": partial_only,
+                    "trusted": trusted,
                     "within_tol": v["amount_validation"]["within_tolerance"],
                     # raw inputs for the fidelity check against scoring.py
                     "_inv": inv, "_sig": sig,
@@ -155,7 +156,7 @@ def _pack(rows: list[dict]) -> dict:
     other_src = np.zeros((n, cmax), bool)     # candidate survives without the customer signal
     valid = np.zeros((n, cmax), bool)
     needs_review = np.zeros((n, cmax), bool)
-    partial_only = np.zeros((n, cmax), bool)
+    trusted = np.zeros((n, cmax), bool)
     within_tol = np.zeros((n, cmax), bool)
     is_true = np.zeros((n, cmax), bool)
     for i, r in enumerate(rows):
@@ -168,14 +169,14 @@ def _pack(rows: list[dict]) -> dict:
             other_src[i, j] = c["from_ref"] or c["from_amount"]
             valid[i, j] = c["valid"]
             needs_review[i, j] = c["needs_review"]
-            partial_only[i, j] = c["partial_only"]
+            trusted[i, j] = c["trusted"]
             within_tol[i, j] = c["within_tol"]
             is_true[i, j] = c["invoice_id"] in true_ids
     exp = np.array([OUTCOMES.index(r["label"]["expected_outcome"]) for r in rows])
     return {
         "rows": rows, "F": F, "fuzzy": fuzzy, "gstin": gstin, "exists": exists,
         "other_src": other_src, "valid": valid, "needs_review": needs_review,
-        "partial_only": partial_only, "within_tol": within_tol, "is_true": is_true, "expected": exp,
+        "trusted": trusted, "within_tol": within_tol, "is_true": is_true, "expected": exp,
         "bulk": np.array([r["bulk"] for r in rows], bool),
         "auto_ok": np.array([r["label"]["auto_ok"] for r in rows]),
         "has_truth": np.array([bool(r["label"]["true_invoice_ids"]) for r in rows]),
@@ -225,10 +226,9 @@ def decide(D: dict, p: dict) -> dict:
         gap = np.where(n_alive > 1, s0 - s1, np.inf)
     ambiguous = any_c & (gap < p["ambiguity_margin"])
     v_ok = D["valid"][idx, top] & ~D["needs_review"][idx, top]
-    ref = F[idx, top, 0] > 0
-    part = D["partial_only"][idx, top]
+    gates = D["trusted"][idx, top] & cust_on[idx, top]
     hi = s0 >= p["auto_match_threshold"]
-    auto = any_c & ~ambiguous & hi & (v_ok | (ref & part))
+    auto = any_c & ~ambiguous & hi & v_ok & gates
     review = any_c & ~ambiguous & ~auto & ((s0 >= p["review_threshold"]) | D["needs_review"][idx, top])
     review |= ambiguous
     # Bulk combo found and the best single invoice doesn't fit the amount → review

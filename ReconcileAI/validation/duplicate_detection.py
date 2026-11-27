@@ -6,12 +6,11 @@ Only transactions imported *before* the one being checked can be its original,
 so the first occurrence is never flagged — only the copies are.
 """
 from __future__ import annotations
-import re
 
 from config.thresholds import DUPLICATE_UTR_WINDOW_DAYS
-from database.repositories import get_transactions_imported_before
-
-_INV_RE = re.compile(r"\b(inv[\s\-_/]?\d{3,6})\b", re.IGNORECASE)
+from database.repositories import get_possible_duplicates
+from matching.references import find_references, invoice_key
+from utils.dates import parse_date as _parse_date
 
 
 def detect_duplicate_transaction(transaction: dict,
@@ -31,7 +30,8 @@ def detect_duplicate_transaction(transaction: dict,
     {"is_duplicate": bool, "reason": str, "duplicate_of": str | None}
     """
     if existing_transactions is None:
-        existing_transactions = get_transactions_imported_before(transaction.get("transaction_id", ""))
+        existing_transactions = get_possible_duplicates(
+            transaction.get("transaction_id", ""), transaction.get("utr"), transaction.get("credit_amount", 0))
     me = transaction.get("transaction_id")
     existing = [ex for ex in existing_transactions if ex.get("transaction_id") != me]
     utr = (transaction.get("utr") or "").strip().upper()
@@ -78,19 +78,9 @@ def detect_duplicate_transaction(transaction: dict,
     return {"is_duplicate": False, "reason": "", "duplicate_of": None}
 
 
-def _parse_date(date_str: str | None):
-    if not date_str:
-        return None
-    try:
-        from dateutil import parser as dp
-        return dp.parse(date_str).date()
-    except Exception:
-        return None
-
-
 def _extract_invoice_refs(narration: str) -> set[str]:
     """Return a set of normalised invoice reference strings found in the narration."""
-    return {re.sub(r"[\s\-_/]", "", m.group(0).upper()) for m in _INV_RE.finditer(narration or "")}
+    return {invoice_key(ref) for _, _, ref in find_references(narration or "")}
 
 
 def _narration_similarity(a: str, b: str) -> float:

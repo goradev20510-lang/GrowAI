@@ -5,6 +5,7 @@ Fast lookup for transactions that carry explicit invoice references.
 from __future__ import annotations
 import re
 from database.repositories import get_all_invoices
+from matching.references import invoice_key, invoice_number
 
 
 def find_exact_invoice_match(invoice_ref_candidate: str | None,
@@ -21,23 +22,16 @@ def find_exact_invoice_match(invoice_ref_candidate: str | None,
     if not invoice_ref_candidate:
         return []
 
-    normalised = _normalise_invoice_ref(invoice_ref_candidate)
+    key        = invoice_key(invoice_ref_candidate)
     invoices   = all_invoices if all_invoices is not None else get_all_invoices()
-    matches    = [inv for inv in invoices if _normalise_invoice_ref(inv.get("invoice_id", "")) == normalised]
+    matches    = [inv for inv in invoices if invoice_key(invoice_number(inv)) == key
+                  or invoice_key(inv.get("invoice_id", "")) == key]
 
     raw = re.sub(r"\D", "", invoice_ref_candidate)
     if not matches and allow_numeric and invoice_ref_candidate.strip().isdigit() and len(raw) >= 3:
         num = raw.lstrip("0") or "0"
         hits = [inv for inv in invoices
-                if (re.sub(r"\D", "", inv.get("invoice_id", "")).lstrip("0") or "0") == num]
+                if (re.sub(r"\D", "", invoice_number(inv)).lstrip("0") or "0") == num]
         if len(hits) == 1:
             matches = hits
     return matches
-
-
-def _normalise_invoice_ref(ref: str) -> str:
-    """Strip spaces, hyphens and leading zeros to create a canonical key."""
-    ref = re.sub(r"[\s\-_/]", "", ref.upper().strip())
-    # Remove leading zeros from numeric suffix: INV-0101 → INV101
-    ref = re.sub(r"0+(\d)", r"\1", ref)
-    return ref

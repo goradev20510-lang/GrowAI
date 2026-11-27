@@ -17,7 +17,7 @@ from database.repositories import (
     get_all_transactions, get_all_invoices, get_all_review_cases, get_open_review_cases,
     get_audit_logs, get_reconciliation_summary, get_all_remittances, get_all_allocations,
     get_all_settlement_components, get_all_customers, get_tds_components, get_invoice,
-    get_transaction, get_allocations_for_transaction,
+    get_transaction, get_allocations_for_transaction, get_credits, get_adjustments,
 )
 
 AGING_BUCKETS = ["Not due", "1–30", "31–60", "61–90", "90+"]
@@ -83,31 +83,38 @@ def aging_summary(as_of: date | None = None) -> pd.DataFrame:
 
 
 def customer_balances() -> pd.DataFrame:
-    """Invoiced vs received vs outstanding per customer."""
+    """Invoiced vs received vs adjusted vs outstanding per customer, plus credit held."""
     invoices = get_all_invoices()
-    approved = [a for a in get_all_allocations("approved")]
     paid_by_invoice: dict[str, float] = {}
-    for a in approved:
+    for a in get_all_allocations("approved"):
         paid_by_invoice[a["invoice_id"]] = paid_by_invoice.get(a["invoice_id"], 0.0) + float(a["allocated_amount"])
+    adjusted: dict[str, float] = {}
+    for a in get_adjustments():
+        adjusted[a["invoice_id"]] = adjusted.get(a["invoice_id"], 0.0) + float(a["amount"])
+    cols = ["customer_name", "invoices", "invoiced", "received", "adjusted", "outstanding",
+            "open_invoices", "overpaid_by"]
     by_cust: dict[str, dict] = {}
+
+    def _row(name):
+        return by_cust.setdefault(name, {k: 0.0 for k in cols} | {"customer_name": name, "invoices": 0,
+                                                                  "open_invoices": 0})
     for inv in invoices:
-        name = inv.get("customer_name") or "Unknown"
-        c = by_cust.setdefault(name, {"customer_name": name, "invoices": 0, "invoiced": 0.0, "received": 0.0,
-                                      "outstanding": 0.0, "open_invoices": 0, "overpaid_by": 0.0})
+        c = _row(inv.get("customer_name") or "Unknown")
         c["invoices"] += 1
         c["invoiced"] += float(inv["total_amount"])
-        paid = paid_by_invoice.get(inv["invoice_id"], 0.0)
+        paid = paid_by_invoice.get(inv["invoice_id"], 0.0) + float(inv.get("opening_paid") or 0)
         c["received"] += paid
+        c["adjusted"] += adjusted.get(inv["invoice_id"], 0.0) + float(inv.get("rounding_writeoff") or 0)
         if inv["status"] in ("open", "partially_paid"):
             c["outstanding"] += float(inv["outstanding_amount"])
             c["open_invoices"] += 1
         if paid > float(inv["total_amount"]):
             c["overpaid_by"] += paid - float(inv["total_amount"])
-    df = pd.DataFrame(list(by_cust.values()))
-    if df.empty:
-        return pd.DataFrame(columns=["customer_name", "invoices", "invoiced", "received", "outstanding",
-                                     "open_invoices", "overpaid_by"])
-    return df.round(2).sort_values("outstanding", ascending=False)
+    for credit in get_credits():
+        if float(credit["remaining"]) > 0:
+            _row(credit.get("customer_name") or "Unknown")["overpaid_by"] += float(credit["remaining"])
+    df = pd.DataFrame(list(by_cust.values()), columns=cols)
+    return df.round(2).sort_values("outstanding", ascending=False) if not df.empty else df
 
 
 def tds_register() -> pd.DataFrame:
@@ -160,6 +167,7 @@ def build_report_workbook(as_of: date | None = None) -> bytes:
          f"{summary['invoices_overpaid']}"),
         ("Outstanding receivables (₹)", summary["outstanding_value"]),
         ("TDS awaiting certificate (₹)", summary["tds_pending"]),
+        ("Customer credit not yet applied (₹)", summary["unapplied_credit"]),
         ("Open review cases", summary["open_review_cases"]),
     ]
     sheets = {
@@ -174,6 +182,8 @@ def build_report_workbook(as_of: date | None = None) -> bytes:
         "Customers":      customer_balances(),
         "TDS Register":   tds_register(),
         "Remittances":    pd.DataFrame(get_all_remittances()),
+        "Credits":        pd.DataFrame(get_credits(open_only=False)),
+        "Adjustments":    pd.DataFrame(get_adjustments(active_only=False)),
         "Audit Log":      pd.DataFrame(get_audit_logs(limit=5000)),
     }
     buf = io.BytesIO()
@@ -204,6 +214,11 @@ def _write_sheet(writer, df: pd.DataFrame, sheet_name: str) -> None:
         cell.font = Font(bold=True, color="FFFFFF")
         cell.fill = header_fill
     ws.freeze_panes = "A2"
+    # Imported text such as "=HYPERLINK(…)" must stay text, never become a live formula.
+    for row in ws.iter_rows():
+        for cell in row:
+            if cell.data_type == "f":
+                cell.data_type = "s"
     for idx, col in enumerate(df.columns, start=1):
         letter = ws.cell(row=1, column=idx).column_letter
         values = [str(col)] + [str(v) for v in df[col].head(500).tolist()]
@@ -231,6 +246,23 @@ def _inr(v: float) -> str:
     return f"₹{float(v):,.2f}"
 
 
+def _named_customer(query: str) -> dict | None:
+    """The one customer whose full name (without legal suffixes) or first distinctive word is quoted."""
+    from matching.fuzzy_match import _core, _GENERIC
+    words = set(re.findall(r"\w+", query.lower()))
+    hits = []
+    for cust in get_all_customers():
+        distinctive = [w for w in _core(cust["name"]) if w not in _GENERIC and len(w) >= 3]
+        score = sum(w in words for w in distinctive)
+        if score:
+            score += sum(w in words for w in _core(cust["name"])) / 10
+            hits.append((score, cust))
+    hits.sort(key=lambda h: -h[0])
+    if hits and (len(hits) == 1 or hits[0][0] > hits[1][0]):
+        return hits[0][1]
+    return None
+
+
 def _route(query: str) -> dict:
     """Pick a backend function from the question. Python fetches the data; nothing is invented."""
     q = query.lower()
@@ -252,6 +284,11 @@ def _route(query: str) -> dict:
             return {"function": "get_transaction",
                     "result": {"transaction": txn,
                                "allocations": get_allocations_for_transaction(txn["transaction_id"])}}
+    # A customer named in the question beats the generic keywords below.
+    named = _named_customer(query)
+    if named:
+        invs = [i for i in get_all_invoices() if i.get("customer_id") == named["customer_id"]]
+        return {"function": "get_customer_invoices", "result": {"customer": named["name"], "invoices": invs}}
     if "unmatched" in q or "unidentified" in q or "unknown" in q:
         return {"function": "get_unmatched_transactions", "result": get_all_transactions("unmatched")}
     if "duplicate" in q:
@@ -264,14 +301,11 @@ def _route(query: str) -> dict:
         return {"function": "get_partially_paid_invoices", "result": get_all_invoices("partially_paid")}
     if any(w in q for w in ("overdue", "aging", "ageing", "past due", "late")):
         return {"function": "get_aging", "result": aging_report().to_dict("records")}
+    if any(w in q for w in ("settled", "who has paid", "paid invoices", "fully paid")):
+        return {"function": "get_settled_invoices", "result": get_all_invoices("settled")}
     if any(w in q for w in ("customer", "owe", "owes", "balance", "who")):
-        # customer named in the question?
-        from matching.fuzzy_match import fuzzy_match_customer
-        for cust in fuzzy_match_customer(query, get_all_customers(), threshold=80)[:1]:
-            invs = [i for i in get_all_invoices() if i.get("customer_id") == cust["customer_id"]]
-            return {"function": "get_customer_invoices", "result": {"customer": cust["name"], "invoices": invs}}
         return {"function": "get_customer_balances", "result": customer_balances().to_dict("records")}
-    if "settled" in q or "paid" in q:
+    if "paid" in q:
         return {"function": "get_settled_invoices", "result": get_all_invoices("settled")}
     return {"function": "get_reconciliation_summary", "result": get_reconciliation_summary()}
 

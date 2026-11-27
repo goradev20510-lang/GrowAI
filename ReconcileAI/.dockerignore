@@ -11,3 +11,5 @@ data/processed
 data/uploads
 .git
 tests
+backups
+frontend

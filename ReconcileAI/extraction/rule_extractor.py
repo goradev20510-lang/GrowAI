@@ -10,8 +10,10 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from utils.dates import to_iso as _to_iso
+
 _AMOUNT = r"(?:₹|rs\.?|inr)\s*([0-9][0-9,]*(?:\.\d{1,2})?)"
-_INV_REF = re.compile(r"\b(?:INV|INVOICE)[\s\-_/#:]*(?:NO\.?\s*)?([A-Z]{0,3}\d{2,8})\b", re.IGNORECASE)
+_INV_REF = re.compile(r"\b(?:INV|INVOICE)[\s\-_/#:]*(?:NO\.?\s*)?([A-Z]{0,3}\d{1,8}(?:[\-/]\d{1,8})*)\b", re.IGNORECASE)
 _GSTIN = re.compile(r"\b(\d{2}[A-Z]{5}\d{4}[A-Z][1-9A-Z]Z[0-9A-Z])\b")
 _TDS_SECTION = re.compile(r"(?:section|sec\.?|u/s)\s*(19[24][A-Z]{1,2})\b", re.IGNORECASE)
 _UTR_LABELLED = re.compile(
@@ -49,12 +51,6 @@ def find_invoice_refs(text: str) -> list[str]:
     return seen
 
 
-def _to_iso(date_str: str) -> str | None:
-    try:
-        from dateutil import parser as dp
-        return dp.parse(date_str, dayfirst=not re.match(r"\d{4}-", date_str)).date().isoformat()
-    except Exception:
-        return None
 
 
 def _first_amount_after(pattern: str, text: str) -> float | None:
