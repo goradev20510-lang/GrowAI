@@ -39,13 +39,13 @@ from decision import adjustments as adj  # noqa: E402
 from decision import review_manager as rm  # noqa: E402
 from decision import vendor_payments as vp  # noqa: E402
 from database import repositories as repo  # noqa: E402
-from security import auth, clerk  # noqa: E402
+from security import auth  # noqa: E402
 
 @asynccontextmanager
 async def _lifespan(_app):
     initialise_database()
     auth.bootstrap_admin()
-    if auth.ensure_demo_account():
+    if auth.ensure_demo_account() or settings.DEMO_DATA:
         from data.demo_seed import seed_if_empty
         seed_if_empty()
     yield
@@ -70,7 +70,7 @@ def _required_role(method: str, path: str) -> str:
 
 @app.middleware("http")
 async def _guard_requests(request: Request, call_next):
-    """Login (Clerk when configured, else HTTP Basic) and cross-site request protection."""
+    """Login (session token or HTTP Basic) and cross-site request protection."""
     method, path = request.method, request.url.path
     if method == "OPTIONS":
         return await call_next(request)
@@ -79,13 +79,10 @@ async def _guard_requests(request: Request, call_next):
         return JSONResponse({"detail": "Requests from this origin are not allowed."}, status_code=403)
     if path in PUBLIC_PATHS:
         return await call_next(request)
-    if settings.AUTH_ENABLED or clerk.enabled():
+    if settings.AUTH_ENABLED:
         user = None
         scheme, _, token = request.headers.get("authorization", "").partition(" ")
-        if clerk.enabled():
-            if scheme.lower() == "bearer":
-                user = await run_in_threadpool(clerk.authenticate, token, ORIGINS)
-        elif scheme.lower() == "bearer":
+        if scheme.lower() == "bearer":
             user = await run_in_threadpool(auth.session_user, token)
         elif scheme.lower() == "basic":
             try:
@@ -95,7 +92,7 @@ async def _guard_requests(request: Request, call_next):
                 user = None
         if not user:
             # A Basic challenge would make browsers pop a dialog over the website's own sign-in.
-            challenge = "Bearer" if clerk.enabled() or scheme.lower() == "bearer" else 'Basic realm="ReconcileAI"'
+            challenge = "Bearer" if scheme.lower() == "bearer" else 'Basic realm="ReconcileAI"'
             return JSONResponse({"detail": "Sign in to continue."}, status_code=401,
                                 headers={"WWW-Authenticate": challenge})
         if not auth.has_role(user, _required_role(method, path)):
@@ -133,9 +130,6 @@ def _reviewer(request: Request, x_reviewer: str | None) -> str:
     """The signed-in user when login is on; otherwise the name the client sends."""
     user = getattr(request.state, "user", None)
     name = (x_reviewer or "").strip()
-    if user and clerk.enabled():
-        # The id is verified; the typed name only makes the audit trail readable.
-        return f"{name} [{user}]" if name else user
     who = user or name
     if not who:
         raise HTTPException(400, "Enter your name as reviewer first. Every decision is recorded against it.")
@@ -204,11 +198,6 @@ class CredentialsBody(BaseModel):
     password: str
 
 
-def _local_auth_only() -> None:
-    if clerk.enabled():
-        raise HTTPException(404, "Sign-in is handled by Clerk.")
-
-
 def _bearer(authorization: str | None) -> str:
     scheme, _, token = (authorization or "").partition(" ")
     return token if scheme.lower() == "bearer" else ""
@@ -220,7 +209,6 @@ def _signed_in(user: dict) -> dict:
 
 @app.get("/api/auth/session")
 def auth_session(authorization: str | None = Header(None)) -> dict:
-    _local_auth_only()
     demo = bool(settings.DEMO_USER and settings.DEMO_PASSWORD)
     return {"auth_required": settings.AUTH_ENABLED,
             "signup_enabled": settings.SIGNUP_ENABLED,
@@ -230,7 +218,6 @@ def auth_session(authorization: str | None = Header(None)) -> dict:
 
 @app.post("/api/auth/signup")
 def auth_signup(body: CredentialsBody) -> dict:
-    _local_auth_only()
     if not settings.SIGNUP_ENABLED:
         raise HTTPException(403, "Sign-up is switched off. Ask an administrator for an account.")
     try:
@@ -243,7 +230,6 @@ def auth_signup(body: CredentialsBody) -> dict:
 
 @app.post("/api/auth/signin")
 def auth_signin(body: CredentialsBody) -> dict:
-    _local_auth_only()
     user = None
     if len(body.password) <= auth.MAX_PASSWORD:
         user = auth.authenticate(auth.normalise_username(body.username), body.password)
@@ -254,7 +240,6 @@ def auth_signin(body: CredentialsBody) -> dict:
 
 @app.post("/api/auth/signout")
 def auth_signout(authorization: str | None = Header(None)) -> dict:
-    _local_auth_only()
     token = _bearer(authorization)
     if token:
         auth.end_session(token)

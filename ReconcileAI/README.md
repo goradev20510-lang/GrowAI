@@ -109,8 +109,6 @@ These are API/CLI features; the two web UIs do not have screens for them yet.
 
 ## Login, audit and backups
 
-- **Website and API: Clerk.** Set `CLERK_PUBLISHABLE_KEY` on the API and `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` on the website (the same public key; no secret key is used). The API verifies each session token. Signed-in users get `CLERK_DEFAULT_ROLE` (default `viewer`; the Render demo sets `admin`), and ids in `CLERK_ADMIN_IDS` are admins. The audit trail records the typed reviewer name with the Clerk user id. The Streamlit app does not use Clerk.
-
 - Login is **on when `APP_ENV=production`** (or `RECONCILE_AUTH=1`). Create the first admin with `RECONCILE_ADMIN_USER` / `RECONCILE_ADMIN_PASSWORD` (10+ characters) or `python -m scripts.create_user NAME --role admin`. Roles: viewer, reviewer, admin. The API uses HTTP Basic, so **serve it over HTTPS only**.
 - Audit entries are hash-chained and database triggers block edits. `GET /api/audit-chain` verifies the chain. Someone with direct file access could rebuild it, so record the returned `head` elsewhere.
 - `python -m scripts.backup_db` makes a consistent copy and checks the chain. Schedule it yourself.
@@ -220,13 +218,13 @@ ReconcileAI/
 
 ## Sign-in and the demo account
 
-`sh scripts/run_demo.sh` starts the API and website with sign-in on, then open http://localhost:3002/signin. Set `PYTHON=/path/to/python` if the project has no `.venv`.
+The public Render demo has login off (`RECONCILE_AUTH=0`) and `RECONCILE_DEMO_DATA=1`, so the website and the Streamlit app open straight into the synthetic dataset, which is re-created after every cold restart. With login on, the website has no sign-in page: it signs in with the demo account below automatically. `sh scripts/run_demo.sh` starts the API and website that way. Set `PYTHON=/path/to/python` if the project has no `.venv`.
 
 | Email | Password |
 |---|---|
 | `demo@reconcileai.example` | `ReconcileDemo#2026` |
 
-The demo account has the reviewer role and sees synthetic data only. Anyone can also sign up at `/signup`; all accounts share one ledger. Sign-up is off when `APP_ENV=production` unless `RECONCILE_SIGNUP=1`. If `CLERK_PUBLISHABLE_KEY` is set, Clerk handles sign-in instead.
+The demo account has the reviewer role and sees synthetic data only. Anyone can also sign up at `/signup`; all accounts share one ledger. Sign-up is off when `APP_ENV=production` unless `RECONCILE_SIGNUP=1`.
 
 ## Tests
 

@@ -77,11 +77,7 @@ let reviewerName = "";
 // HTTP headers only carry Latin-1.
 export const setApiReviewer = (name: string) => { reviewerName = name.replace(/[^\x20-\x7e\xa0-\xff]/g, "").trim(); };
 
-// Set by the Clerk gate. Without Clerk, the stored session token is used.
-let tokenProvider: (() => Promise<string | null>) | null = null;
-export const setApiTokenProvider = (p: typeof tokenProvider) => { tokenProvider = p; };
-
-// Email-and-password sessions (used when Clerk is not configured).
+// Email-and-password sessions (used only when the API has login switched on).
 const SESSION_KEY = "reconcile.session";
 export const readSessionToken = () => localStorage.getItem(SESSION_KEY);
 export const saveSessionToken = (t: string | null) =>
@@ -95,7 +91,7 @@ export type SessionInfo = {
 type SignedIn = { token: string; user: SessionUser };
 
 async function authorise(headers: Headers) {
-  const token = tokenProvider ? await tokenProvider() : readSessionToken();
+  const token = readSessionToken();
   if (token) headers.set("Authorization", `Bearer ${token}`);
 }
 

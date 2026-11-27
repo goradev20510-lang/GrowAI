@@ -46,6 +46,9 @@ st.set_page_config(
 )
 
 initialise_database()
+if settings.DEMO_DATA:
+    from data.demo_seed import seed_if_empty
+    seed_if_empty()
 
 # Only what the theme can't express: the hero figure, the value-split bar, key/value rows.
 st.html("""

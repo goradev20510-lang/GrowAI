@@ -76,6 +76,9 @@ SESSION_DAYS: int = int(os.getenv("RECONCILE_SESSION_DAYS", 7))
 # sign-in page and fills an empty database with synthetic data. Never use with real data.
 DEMO_USER: str = os.getenv("RECONCILE_DEMO_USER", "").strip().lower()
 DEMO_PASSWORD: str = os.getenv("RECONCILE_DEMO_PASSWORD", "")
+# Fill an empty database with the synthetic dataset on start-up (for a public demo with
+# login off, where the database is wiped on every cold restart). Never use with real data.
+DEMO_DATA: bool = _flag("RECONCILE_DEMO_DATA", False)
 
 # ── Directories ───────────────────────────────────────────────────────────────
 DATA_RAW_DIR: Path = ROOT_DIR / "data" / "raw"

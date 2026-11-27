@@ -12,7 +12,6 @@ def client(db, monkeypatch):
     for key, value in (("AUTH_ENABLED", True), ("SIGNUP_ENABLED", True), ("SIGNUP_ROLE", "reviewer"),
                        ("SESSION_DAYS", 7), ("DEMO_USER", ""), ("DEMO_PASSWORD", "")):
         monkeypatch.setattr(settings, key, value)
-    monkeypatch.delenv("CLERK_PUBLISHABLE_KEY", raising=False)
     from api.main import app
     with TestClient(app) as c:
         yield c
@@ -78,7 +77,6 @@ def test_demo_account_has_data(db, monkeypatch):
     monkeypatch.setattr(settings, "AUTH_ENABLED", True)
     monkeypatch.setattr(settings, "DEMO_USER", "demo@reconcileai.example")
     monkeypatch.setattr(settings, "DEMO_PASSWORD", PASSWORD)
-    monkeypatch.delenv("CLERK_PUBLISHABLE_KEY", raising=False)
     from api.main import app
     with TestClient(app) as c:
         assert c.get("/api/auth/session").json()["demo"]["username"] == "demo@reconcileai.example"

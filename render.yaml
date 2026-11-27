@@ -17,11 +17,11 @@ services:
         value: "1"
       - key: LLM_MATCH_EXPLANATIONS
         value: "0"
-      # Login is on in production. Set both in the dashboard; they create the first admin.
-      - key: RECONCILE_ADMIN_USER
-        sync: false
-      - key: RECONCILE_ADMIN_PASSWORD
-        sync: false
+      # Public demo: no login, synthetic data loaded on every start.
+      - key: RECONCILE_AUTH
+        value: "0"
+      - key: RECONCILE_DEMO_DATA
+        value: "1"
       # Set to 1 only if you agree to send (masked) document text to the model provider.
       - key: LLM_DATA_CONSENT
         value: "0"
@@ -54,18 +54,12 @@ services:
         sync: false
       - key: LLM_DATA_CONSENT
         value: "0"
-      # Email-and-password sign-in with a shared demo account (synthetic data only).
-      # The free plan has no disk, so the demo data is re-created on every restart.
+      # Public demo: no login, synthetic data only. The free plan has no disk, so the
+      # demo data is re-created on every (cold) restart.
       - key: RECONCILE_AUTH
+        value: "0"
+      - key: RECONCILE_DEMO_DATA
         value: "1"
-      - key: RECONCILE_SIGNUP
-        value: "1"
-      - key: RECONCILE_SIGNUP_ROLE
-        value: reviewer
-      - key: RECONCILE_DEMO_USER
-        value: demo@reconcileai.example
-      - key: RECONCILE_DEMO_PASSWORD
-        value: "ReconcileDemo#2026"
       # The website's public URL, no trailing slash.
       - key: RECONCILE_CORS
         sync: false
